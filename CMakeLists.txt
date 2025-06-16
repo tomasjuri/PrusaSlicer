@@ -8,8 +8,8 @@
 #/|/
 #/|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
 #/|/
-cmake_minimum_required(VERSION 3.13)
-project(PrusaSlicer)
+cmake_minimum_required(VERSION 3.16)
+project(GCodeVisualizer)
 
 include("version.inc")
 include(GNUInstallDirs)
@@ -184,45 +184,12 @@ enable_testing ()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(NOT WIN32)
-    # Add DEBUG flags to debug builds.
-    add_compile_options("$<$<CONFIG:DEBUG>:-DDEBUG>")
-endif()
+# Use the existing PrusaSlicer build configuration
+include(cmake/modules/FindTBB.cmake)
 
-# WIN10SDK_PATH is used to point CMake to the WIN10 SDK installation directory.
-# We pick it from environment if it is not defined in another way
-if(WIN32)
-    if(NOT DEFINED WIN10SDK_PATH)
-        if(DEFINED ENV{WIN10SDK_PATH})
-                set(WIN10SDK_PATH "$ENV{WIN10SDK_PATH}")
-        endif()
-    endif()
-    if(DEFINED WIN10SDK_PATH)
-        if (EXISTS "${WIN10SDK_PATH}/include/winrt/windows.graphics.printing3d.h")
-            set(WIN10SDK_INCLUDE_PATH "${WIN10SDK_PATH}/Include")
-        else()
-            message("WIN10SDK_PATH is invalid: ${WIN10SDK_PATH}")
-            message("${WIN10SDK_PATH}/include/winrt/windows.graphics.printing3d.h was not found")
-            message("STL fixing by WinSDK will not be compiled")
-            unset(WIN10SDK_PATH)
-        endif()
-    else()
-        # Try to use the default Windows 10 SDK path.
-        set(WIN10SDK_INCLUDE_PATH "$ENV{WindowsSdkDir}/Include/$ENV{WindowsSDKVersion}")
-        if (NOT EXISTS "${WIN10SDK_INCLUDE_PATH}/winrt/windows.graphics.printing3d.h")
-            message("${WIN10SDK_INCLUDE_PATH}/winrt/windows.graphics.printing3d.h was not found")
-            message("STL fixing by WinSDK will not be compiled")
-            unset(WIN10SDK_INCLUDE_PATH)
-        endif()
-    endif()
-    if(WIN10SDK_INCLUDE_PATH)
-        message("Building with Win10 STL fixing service support")
-        add_definitions(-DHAS_WIN10SDK)
-        include_directories("${WIN10SDK_INCLUDE_PATH}")
-    else()
-        message("Building without Win10 STL fixing service support")
-    endif()
-endif()
+# Add the PrusaSlicer source directories
+add_subdirectory(src/libslic3r)
+add_subdirectory(src/libvgcode)
 
 if (APPLE)
     message("OS X SDK Path: ${CMAKE_OSX_SYSROOT}")
@@ -473,76 +440,46 @@ find_package(PNG REQUIRED)
 
 set(OpenGL_GL_PREFERENCE "LEGACY")
 find_package(OpenGL REQUIRED)
+find_package(glfw3 REQUIRED)
 
-# Find glew or use bundled version
-if (SLIC3R_STATIC AND NOT SLIC3R_STATIC_EXCLUDE_GLEW)
-    set(GLEW_USE_STATIC_LIBS ON)
-    set(GLEW_VERBOSE ON)
-endif()
+# Include directories from PrusaSlicer
+include_directories(src)
+include_directories(src/libslic3r)
+include_directories(src/libvgcode/include)
+include_directories(src/libvgcode/glad/include)
 
-find_package(GLEW REQUIRED)
-
-# Find the Cereal serialization library
-find_package(cereal REQUIRED)
-add_library(libcereal INTERFACE)
-if (NOT TARGET cereal::cereal)
-    target_link_libraries(libcereal INTERFACE cereal)
-else()
-    target_link_libraries(libcereal INTERFACE cereal::cereal)
-endif()
-
-# l10n
-set(L10N_DIR "${SLIC3R_RESOURCES_DIR}/localization")
-add_custom_target(gettext_make_pot
-    COMMAND xgettext --keyword=L --keyword=_L --keyword=_u8L --keyword=L_CONTEXT:1,2c --keyword=_L_PLURAL:1,2 --add-comments=TRN --from-code=UTF-8 --debug --boost
-        -f "${L10N_DIR}/list.txt"
-        -o "${L10N_DIR}/PrusaSlicer.pot"
-    COMMAND hintsToPot ${SLIC3R_RESOURCES_DIR} ${L10N_DIR}
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    COMMENT "Generate pot file from strings in the source tree"
+# Source files for our G-code visualizer
+set(GCODE_VISUALIZER_SOURCES
+    gcode_visualizer/main.cpp
+    gcode_visualizer/GCodeVisualizerApp.cpp
+    gcode_visualizer/GCodeVisualizerApp.hpp
+    gcode_visualizer/CameraController.cpp
+    gcode_visualizer/CameraController.hpp
+    gcode_visualizer/ImageExporter.cpp
+    gcode_visualizer/ImageExporter.hpp
+    gcode_visualizer/BedRenderer.cpp
+    gcode_visualizer/BedRenderer.hpp
+    gcode_visualizer/GCodeConverter.cpp
+    gcode_visualizer/GCodeConverter.hpp
 )
 
-add_custom_target(gettext_merge_community_po_with_pot
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    COMMENT "Merge community po with new generated pot file"
-)
-file(GLOB L10N_PO_FILES "${L10N_DIR}/*/PrusaSlicer*.po")
-# list of names of directories, which are licalized by PS internally
-list(APPEND PS_L10N_DIRS "cs" "de" "es" "fr" "it" "ja" "pl")
-foreach(po_file ${L10N_PO_FILES})
-    GET_FILENAME_COMPONENT(po_dir "${po_file}" DIRECTORY)
-    GET_FILENAME_COMPONENT(po_dir_name "${po_dir}" NAME)
-    list(FIND PS_L10N_DIRS ${po_dir_name} found_dir_id)
-    # found_dir_id==-1 means that po_dir_name wasn't found in PS_L10N_DIRS
-    if(found_dir_id LESS 0)
-        add_custom_command(
-            TARGET gettext_merge_community_po_with_pot PRE_BUILD
-            COMMAND msgmerge -N -o ${po_file} ${po_file} "${L10N_DIR}/PrusaSlicer.pot"
-            # delete obsolete lines from resulting PO to avoid conflicts after a merging of it with wxWidgets.po
-            COMMAND msgattrib --no-obsolete -o ${po_file} ${po_file}
-            DEPENDS ${po_file}
-        )
-    endif()
-endforeach()
+# Create the executable
+add_executable(gcode_visualizer ${GCODE_VISUALIZER_SOURCES})
 
-add_custom_target(gettext_concat_wx_po_with_po
-    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-    COMMENT "Concatenate and merge wxWidgets localization po with PrusaSlicer po file"
+# Link against required libraries
+target_link_libraries(gcode_visualizer
+    libslic3r
+    libvgcode
+    OpenGL::GL
+    glfw
+    ${CMAKE_DL_LIBS}
 )
-file(GLOB L10N_PO_FILES "${L10N_DIR}/*/PrusaSlicer*.po")
-foreach(po_file ${L10N_PO_FILES})
-    GET_FILENAME_COMPONENT(po_dir "${po_file}" DIRECTORY)
-    GET_FILENAME_COMPONENT(po_dir_name "${po_dir}" NAME)
-    SET(wx_po_file "${L10N_DIR}/wx_locale/${po_dir_name}.po")
-    #SET(po_new_file "${po_dir}/PrusaSlicer_.po")
-    add_custom_command(
-        TARGET gettext_concat_wx_po_with_po PRE_BUILD
-        COMMAND msgcat --use-first -o ${po_file} ${po_file} ${wx_po_file}
-        # delete obsolete lines from resulting PO
-        COMMAND msgattrib --no-obsolete -o ${po_file} ${po_file}
-        DEPENDS ${po_file}
-    )
-endforeach()
+
+# Add compiler definitions
+target_compile_definitions(gcode_visualizer PRIVATE
+    SLIC3R_STATIC_DEFINITION
+    VGCODE_ENABLE_COG_AND_TOOL_MARKERS=0
+)
 
 add_custom_target(gettext_po_to_mo
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}

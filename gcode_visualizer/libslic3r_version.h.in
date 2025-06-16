@@ -1,0 +1,8 @@
+#ifndef LIBSLIC3R_VERSION_H
+#define LIBSLIC3R_VERSION_H
+
+// Simple version header for standalone G-code visualizer
+#define SLIC3R_VERSION "2.8.0"
+#define SLIC3R_VERSION_FULL "2.8.0"
+
+#endif // LIBSLIC3R_VERSION_H 
