@@ -2,61 +2,81 @@
 
 #include <glad/gl.h>
 #include <vector>
+#include <string>
 
 // Forward declare our simple matrix type
 struct Mat4x4;
 
-// Simple bed renderer based on PrusaSlicer's 3D bed implementation
+// Advanced bed renderer that can load STL models and SVG textures like PrusaSlicer
 class BedRenderer {
 public:
     BedRenderer();
     ~BedRenderer();
     
-    // Initialize the bed with given dimensions
-    void initialize(float width = 250.0f, float height = 210.0f, float grid_spacing = 10.0f);
+    // Initialize with Prusa bed assets
+    bool initialize(const std::string& stl_path = "", const std::string& svg_path = "");
     
-    // Render the bed grid and surface
+    // Render the bed model and texture
     void render(const Mat4x4& view_matrix, const Mat4x4& projection_matrix);
     
     // Cleanup OpenGL resources
     void cleanup();
     
 private:
-    // OpenGL objects
+    // OpenGL objects for STL model
+    GLuint m_model_vao = 0;
+    GLuint m_model_vbo = 0;
+    GLuint m_model_ebo = 0;
+    
+    // OpenGL objects for grid overlay
     GLuint m_grid_vao = 0;
     GLuint m_grid_vbo = 0;
-    GLuint m_surface_vao = 0;
-    GLuint m_surface_vbo = 0;
-    GLuint m_surface_ebo = 0;
     
-    // Shader program for rendering
-    GLuint m_shader_program = 0;
+    // Texture objects
+    GLuint m_texture_id = 0;
     
-    // Geometry data
+    // Shader programs
+    GLuint m_model_shader = 0;
+    GLuint m_grid_shader = 0;
+    
+    // Model geometry data
+    std::vector<float> m_model_vertices;
+    std::vector<unsigned int> m_model_indices;
     std::vector<float> m_grid_vertices;
-    std::vector<float> m_surface_vertices;
-    std::vector<unsigned int> m_surface_indices;
     
+    int m_model_vertex_count = 0;
+    int m_model_index_count = 0;
     int m_grid_vertex_count = 0;
-    int m_surface_index_count = 0;
     
     bool m_initialized = false;
+    bool m_has_model = false;
+    bool m_has_texture = false;
     
-    // Bed dimensions
-    float m_width = 250.0f;
-    float m_height = 210.0f;
-    float m_grid_spacing = 10.0f;
+    // File paths
+    std::string m_stl_path;
+    std::string m_svg_path;
     
-    // Helper methods
-    void createGridGeometry();
-    void createSurfaceGeometry();
-    void createShaders();
+    // STL loading
+    bool loadSTLModel(const std::string& stl_path);
+    void parseSTLTriangle(const std::string& line, std::vector<float>& vertices);
+    
+    // SVG texture loading (convert to PNG first)
+    bool loadSVGTexture(const std::string& svg_path);
+    bool loadPNGTexture(const std::string& png_path);
+    
+    // Grid generation for overlay
+    void createGridOverlay();
+    
+    // Shader creation
+    bool createShaders();
+    void setupModelBuffers();
     void setupGridBuffers();
-    void setupSurfaceBuffers();
     
     // Shader source code
-    static const char* getVertexShaderSource();
-    static const char* getFragmentShaderSource();
+    static const char* getModelVertexShader();
+    static const char* getModelFragmentShader();
+    static const char* getGridVertexShader();
+    static const char* getGridFragmentShader();
     
     // Shader utilities
     GLuint compileShader(GLenum type, const char* source);

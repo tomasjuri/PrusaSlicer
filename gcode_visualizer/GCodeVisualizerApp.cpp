@@ -44,8 +44,14 @@ bool GCodeVisualizerApp::initialize() {
     m_test_cube_renderer = std::make_unique<TestCubeRenderer>();
     m_gcode_path_renderer = std::make_unique<GCodePathRenderer>();
     
-    // Initialize components
-    m_bed_renderer->initialize(250.0f, 210.0f, 10.0f);  // Prusa bed: 250x210mm with 10mm grid
+    // Initialize components with Prusa MK4 bed assets
+    std::string stl_path = "/Users/tomasjurica/projects/PrusaSlicer-1/resources/profiles/PrusaResearch/mk4_bed.stl";
+    std::string svg_path = "/Users/tomasjurica/projects/PrusaSlicer-1/resources/profiles/PrusaResearch/mk4.svg";
+    if (!m_bed_renderer->initialize(stl_path, svg_path)) {
+        std::cerr << "Failed to initialize bed renderer with Prusa assets, using fallback" << std::endl;
+        // Fallback to simple bed
+        m_bed_renderer->initialize("", "");
+    }
     m_test_cube_renderer->initialize();
     if (!m_gcode_path_renderer->initialize()) {
         std::cerr << "Failed to initialize G-code path renderer" << std::endl;

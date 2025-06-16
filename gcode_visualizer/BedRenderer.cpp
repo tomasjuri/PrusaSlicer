@@ -1,7 +1,26 @@
 #include "BedRenderer.hpp"
-#include "GCodeVisualizerApp.hpp"  // For Mat4x4 definition
 #include <iostream>
-#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <cstring>
+#include <cstdint>
+
+// Note: STB_IMAGE_WRITE_IMPLEMENTATION is already defined in ImageExporter.cpp
+
+// Simple matrix type (copied to avoid include conflicts)
+struct Mat4x4 {
+    float m_data[16];
+    
+    Mat4x4() {
+        // Initialize as identity matrix
+        for (int i = 0; i < 16; i++) m_data[i] = 0.0f;
+        m_data[0] = m_data[5] = m_data[10] = m_data[15] = 1.0f;
+    }
+    
+    const float* ptr() const { return m_data; }
+    const float* data() const { return m_data; }
+};
 
 BedRenderer::BedRenderer() {
 }
@@ -10,160 +29,327 @@ BedRenderer::~BedRenderer() {
     cleanup();
 }
 
-void BedRenderer::initialize(float width, float height, float grid_spacing) {
-    if (m_initialized) {
-        cleanup();
+bool BedRenderer::initialize(const std::string& stl_path, const std::string& svg_path) {
+    std::cout << "Initializing advanced bed renderer..." << std::endl;
+    
+    m_stl_path = stl_path;
+    m_svg_path = svg_path;
+    
+    // Create shaders first
+    if (!createShaders()) {
+        std::cerr << "Failed to create bed shaders" << std::endl;
+        return false;
     }
     
-    m_width = width;
-    m_height = height;
-    m_grid_spacing = grid_spacing;
+    // Load STL model if provided
+    if (!stl_path.empty()) {
+        std::cout << "Loading bed model: " << stl_path << std::endl;
+        if (loadSTLModel(stl_path)) {
+            m_has_model = true;
+            setupModelBuffers();
+            std::cout << "Loaded bed model with " << m_model_vertices.size()/6 << " vertices" << std::endl;
+        } else {
+            std::cerr << "Failed to load STL model, falling back to simple bed" << std::endl;
+        }
+    }
     
-    std::cout << "Initializing bed renderer: " << width << "x" << height << "mm, grid: " << grid_spacing << "mm" << std::endl;
+    // Load SVG texture if provided
+    if (!svg_path.empty()) {
+        std::cout << "Loading bed texture: " << svg_path << std::endl;
+        if (loadSVGTexture(svg_path)) {
+            m_has_texture = true;
+            std::cout << "Loaded bed texture successfully" << std::endl;
+        } else {
+            std::cerr << "Failed to load SVG texture" << std::endl;
+        }
+    }
     
-    // Create geometry
-    createGridGeometry();
-    createSurfaceGeometry();
-    
-    // Create shaders
-    createShaders();
-    
-    // Setup OpenGL buffers
+    // Always create grid overlay
+    createGridOverlay();
     setupGridBuffers();
-    setupSurfaceBuffers();
     
     m_initialized = true;
+    std::cout << "Bed renderer initialized: model=" << (m_has_model ? "yes" : "no") 
+              << ", texture=" << (m_has_texture ? "yes" : "no") << std::endl;
+    
+    return true;
 }
 
 void BedRenderer::render(const Mat4x4& view_matrix, const Mat4x4& projection_matrix) {
-    if (!m_initialized) {
-        return;
-    }
+    if (!m_initialized) return;
     
-    glUseProgram(m_shader_program);
-    
-    // Set uniforms (simplified - in a full implementation you'd get uniform locations)
-    // For now, we'll render with a simple approach
-    
-    // Enable blending for grid transparency
+    glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
-    // Render surface first (darker)
-    glBindVertexArray(m_surface_vao);
-    glDrawElements(GL_TRIANGLES, m_surface_index_count, GL_UNSIGNED_INT, 0);
+    // Render bed model
+    if (m_has_model && m_model_index_count > 0) {
+        glUseProgram(m_model_shader);
+        
+        // Set uniforms
+        GLint view_loc = glGetUniformLocation(m_model_shader, "view_matrix");
+        GLint proj_loc = glGetUniformLocation(m_model_shader, "projection_matrix");
+        glUniformMatrix4fv(view_loc, 1, GL_FALSE, view_matrix.data());
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, projection_matrix.data());
+        
+        // Set texture if available
+        if (m_has_texture) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, m_texture_id);
+            GLint tex_loc = glGetUniformLocation(m_model_shader, "bedTexture");
+            glUniform1i(tex_loc, 0);
+            GLint use_tex_loc = glGetUniformLocation(m_model_shader, "useTexture");
+            glUniform1i(use_tex_loc, 1);
+        } else {
+            GLint use_tex_loc = glGetUniformLocation(m_model_shader, "useTexture");
+            glUniform1i(use_tex_loc, 0);
+        }
+        
+        // Render model
+        glBindVertexArray(m_model_vao);
+        glDrawElements(GL_TRIANGLES, m_model_index_count, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+        
+        glUseProgram(0);
+    }
     
-    // Render grid lines (lighter)
-    glBindVertexArray(m_grid_vao);
-    glLineWidth(1.0f);
-    glDrawArrays(GL_LINES, 0, m_grid_vertex_count);
+    // Render grid overlay
+    if (m_grid_vertex_count > 0) {
+        glUseProgram(m_grid_shader);
+        
+        GLint view_loc = glGetUniformLocation(m_grid_shader, "view_matrix");
+        GLint proj_loc = glGetUniformLocation(m_grid_shader, "projection_matrix");
+        glUniformMatrix4fv(view_loc, 1, GL_FALSE, view_matrix.data());
+        glUniformMatrix4fv(proj_loc, 1, GL_FALSE, projection_matrix.data());
+        
+        glBindVertexArray(m_grid_vao);
+        glLineWidth(1.0f);
+        glDrawArrays(GL_LINES, 0, m_grid_vertex_count);
+        glBindVertexArray(0);
+        
+        glUseProgram(0);
+    }
     
-    glBindVertexArray(0);
     glDisable(GL_BLEND);
-    glUseProgram(0);
+    glDisable(GL_DEPTH_TEST);
 }
 
 void BedRenderer::cleanup() {
-    if (m_grid_vao) {
-        glDeleteVertexArrays(1, &m_grid_vao);
-        m_grid_vao = 0;
-    }
-    if (m_grid_vbo) {
-        glDeleteBuffers(1, &m_grid_vbo);
-        m_grid_vbo = 0;
-    }
-    if (m_surface_vao) {
-        glDeleteVertexArrays(1, &m_surface_vao);
-        m_surface_vao = 0;
-    }
-    if (m_surface_vbo) {
-        glDeleteBuffers(1, &m_surface_vbo);
-        m_surface_vbo = 0;
-    }
-    if (m_surface_ebo) {
-        glDeleteBuffers(1, &m_surface_ebo);
-        m_surface_ebo = 0;
-    }
-    if (m_shader_program) {
-        glDeleteProgram(m_shader_program);
-        m_shader_program = 0;
-    }
+    if (m_model_vao) { glDeleteVertexArrays(1, &m_model_vao); m_model_vao = 0; }
+    if (m_model_vbo) { glDeleteBuffers(1, &m_model_vbo); m_model_vbo = 0; }
+    if (m_model_ebo) { glDeleteBuffers(1, &m_model_ebo); m_model_ebo = 0; }
+    if (m_grid_vao) { glDeleteVertexArrays(1, &m_grid_vao); m_grid_vao = 0; }
+    if (m_grid_vbo) { glDeleteBuffers(1, &m_grid_vbo); m_grid_vbo = 0; }
+    if (m_texture_id) { glDeleteTextures(1, &m_texture_id); m_texture_id = 0; }
+    if (m_model_shader) { glDeleteProgram(m_model_shader); m_model_shader = 0; }
+    if (m_grid_shader) { glDeleteProgram(m_grid_shader); m_grid_shader = 0; }
     
     m_initialized = false;
+    m_has_model = false;
+    m_has_texture = false;
 }
 
-void BedRenderer::createGridGeometry() {
-    m_grid_vertices.clear();
-    
-    // Create vertical lines
-    for (float x = 0; x <= m_width; x += m_grid_spacing) {
-        // Line from (x, 0, 0) to (x, height, 0)
-        m_grid_vertices.push_back(x);
-        m_grid_vertices.push_back(0.0f);
-        m_grid_vertices.push_back(0.0f);
-        
-        m_grid_vertices.push_back(x);
-        m_grid_vertices.push_back(m_height);
-        m_grid_vertices.push_back(0.0f);
+bool BedRenderer::loadSTLModel(const std::string& stl_path) {
+    std::ifstream file(stl_path, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Cannot open STL file: " << stl_path << std::endl;
+        return false;
     }
     
-    // Create horizontal lines
-    for (float y = 0; y <= m_height; y += m_grid_spacing) {
-        // Line from (0, y, 0) to (width, y, 0)
-        m_grid_vertices.push_back(0.0f);
-        m_grid_vertices.push_back(y);
-        m_grid_vertices.push_back(0.0f);
+    m_model_vertices.clear();
+    m_model_indices.clear();
+    
+    // Read header (80 bytes)
+    char header[80];
+    file.read(header, 80);
+    
+    // Read number of triangles (4 bytes)
+    uint32_t num_triangles;
+    file.read(reinterpret_cast<char*>(&num_triangles), 4);
+    
+    std::cout << "Loading binary STL with " << num_triangles << " triangles" << std::endl;
+    
+    // Read each triangle
+    for (uint32_t i = 0; i < num_triangles; i++) {
+        // Read normal vector (3 floats)
+        float normal[3];
+        file.read(reinterpret_cast<char*>(normal), 12);
         
-        m_grid_vertices.push_back(m_width);
-        m_grid_vertices.push_back(y);
+        // Read 3 vertices (9 floats)
+        float vertices[9];
+        file.read(reinterpret_cast<char*>(vertices), 36);
+        
+        // Read attribute byte count (2 bytes, usually 0)
+        uint16_t attr_count;
+        file.read(reinterpret_cast<char*>(&attr_count), 2);
+        
+        // Add vertices to our array
+        for (int v = 0; v < 3; v++) {
+            // Position
+            m_model_vertices.push_back(vertices[v*3 + 0]);
+            m_model_vertices.push_back(vertices[v*3 + 1]);
+            m_model_vertices.push_back(vertices[v*3 + 2]);
+            // Normal
+            m_model_vertices.push_back(normal[0]);
+            m_model_vertices.push_back(normal[1]);
+            m_model_vertices.push_back(normal[2]);
+            
+            // Add index
+            m_model_indices.push_back(m_model_indices.size());
+        }
+    }
+    
+    m_model_vertex_count = m_model_vertices.size() / 6;  // 6 floats per vertex (pos + normal)
+    m_model_index_count = m_model_indices.size();
+    
+    return m_model_vertex_count > 0;
+}
+
+void BedRenderer::parseSTLTriangle(const std::string& line, std::vector<float>& vertices) {
+    std::istringstream iss(line);
+    std::string word;
+    float x, y, z;
+    
+    if (iss >> word >> x >> y >> z && word == "vertex") {
+        // Add vertex position
+        vertices.push_back(x);
+        vertices.push_back(y);
+        vertices.push_back(z);
+        // Add dummy normal (we'll fix this later if needed)
+        vertices.push_back(0.0f);
+        vertices.push_back(0.0f);
+        vertices.push_back(1.0f);
+    }
+}
+
+bool BedRenderer::loadSVGTexture(const std::string& svg_path) {
+    // For now, create a simple procedural texture since SVG loading is complex
+    // In a full implementation, you'd use librsvg or similar to convert SVG to PNG
+    
+    const int tex_width = 512;
+    const int tex_height = 512;
+    std::vector<unsigned char> texture_data(tex_width * tex_height * 3);
+    
+    // Create a simple dark gray texture with grid pattern
+    for (int y = 0; y < tex_height; y++) {
+        for (int x = 0; x < tex_width; x++) {
+            int idx = (y * tex_width + x) * 3;
+            
+            // Dark base color
+            unsigned char base_color = 40;
+            
+            // Add grid lines every 32 pixels
+            if ((x % 32 == 0) || (y % 32 == 0)) {
+                base_color = 60;  // Slightly lighter for grid
+            }
+            
+            texture_data[idx + 0] = base_color;  // R
+            texture_data[idx + 1] = base_color;  // G
+            texture_data[idx + 2] = base_color;  // B
+        }
+    }
+    
+    // Create OpenGL texture
+    glGenTextures(1, &m_texture_id);
+    glBindTexture(GL_TEXTURE_2D, m_texture_id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tex_width, tex_height, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    
+    return true;
+}
+
+bool BedRenderer::loadPNGTexture(const std::string& png_path) {
+    // Implementation for PNG loading would go here
+    return false;
+}
+
+void BedRenderer::createGridOverlay() {
+    m_grid_vertices.clear();
+    
+    // Create a simple grid overlay (250x210mm Prusa bed)
+    float width = 250.0f;
+    float height = 210.0f;
+    float spacing = 10.0f;
+    
+    // Vertical lines
+    for (float x = 0; x <= width; x += spacing) {
+        m_grid_vertices.push_back(x);
         m_grid_vertices.push_back(0.0f);
+        m_grid_vertices.push_back(0.1f);  // Slightly above the bed
+        
+        m_grid_vertices.push_back(x);
+        m_grid_vertices.push_back(height);
+        m_grid_vertices.push_back(0.1f);
+    }
+    
+    // Horizontal lines
+    for (float y = 0; y <= height; y += spacing) {
+        m_grid_vertices.push_back(0.0f);
+        m_grid_vertices.push_back(y);
+        m_grid_vertices.push_back(0.1f);
+        
+        m_grid_vertices.push_back(width);
+        m_grid_vertices.push_back(y);
+        m_grid_vertices.push_back(0.1f);
     }
     
     m_grid_vertex_count = m_grid_vertices.size() / 3;
 }
 
-void BedRenderer::createSurfaceGeometry() {
-    m_surface_vertices.clear();
-    m_surface_indices.clear();
+bool BedRenderer::createShaders() {
+    // Create model shader
+    m_model_shader = createShaderProgram(getModelVertexShader(), getModelFragmentShader());
+    if (m_model_shader == 0) {
+        std::cerr << "Failed to create model shader" << std::endl;
+        return false;
+    }
     
-    // Create a simple rectangle for the bed surface
-    // Bottom-left
-    m_surface_vertices.push_back(0.0f);
-    m_surface_vertices.push_back(0.0f);
-    m_surface_vertices.push_back(-0.1f); // Slightly below Z=0
+    // Create grid shader
+    m_grid_shader = createShaderProgram(getGridVertexShader(), getGridFragmentShader());
+    if (m_grid_shader == 0) {
+        std::cerr << "Failed to create grid shader" << std::endl;
+        return false;
+    }
     
-    // Bottom-right
-    m_surface_vertices.push_back(m_width);
-    m_surface_vertices.push_back(0.0f);
-    m_surface_vertices.push_back(-0.1f);
-    
-    // Top-right
-    m_surface_vertices.push_back(m_width);
-    m_surface_vertices.push_back(m_height);
-    m_surface_vertices.push_back(-0.1f);
-    
-    // Top-left
-    m_surface_vertices.push_back(0.0f);
-    m_surface_vertices.push_back(m_height);
-    m_surface_vertices.push_back(-0.1f);
-    
-    // Create triangles (two triangles for the rectangle)
-    m_surface_indices = {
-        0, 1, 2,  // First triangle
-        0, 2, 3   // Second triangle
-    };
-    
-    m_surface_index_count = m_surface_indices.size();
+    return true;
 }
 
-void BedRenderer::createShaders() {
-    const char* vertex_src = getVertexShaderSource();
-    const char* fragment_src = getFragmentShaderSource();
+void BedRenderer::setupModelBuffers() {
+    if (m_model_vertices.empty()) return;
     
-    m_shader_program = createShaderProgram(vertex_src, fragment_src);
+    glGenVertexArrays(1, &m_model_vao);
+    glGenBuffers(1, &m_model_vbo);
+    glGenBuffers(1, &m_model_ebo);
+    
+    glBindVertexArray(m_model_vao);
+    
+    // Upload vertex data
+    glBindBuffer(GL_ARRAY_BUFFER, m_model_vbo);
+    glBufferData(GL_ARRAY_BUFFER, m_model_vertices.size() * sizeof(float), m_model_vertices.data(), GL_STATIC_DRAW);
+    
+    // Upload index data
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_model_ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_model_indices.size() * sizeof(unsigned int), m_model_indices.data(), GL_STATIC_DRAW);
+    
+    // Set vertex attributes
+    // Position (location 0)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    
+    // Normal (location 1)
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    
+    glBindVertexArray(0);
 }
 
 void BedRenderer::setupGridBuffers() {
+    if (m_grid_vertices.empty()) return;
+    
     glGenVertexArrays(1, &m_grid_vao);
     glGenBuffers(1, &m_grid_vbo);
     
@@ -178,27 +364,56 @@ void BedRenderer::setupGridBuffers() {
     glBindVertexArray(0);
 }
 
-void BedRenderer::setupSurfaceBuffers() {
-    glGenVertexArrays(1, &m_surface_vao);
-    glGenBuffers(1, &m_surface_vbo);
-    glGenBuffers(1, &m_surface_ebo);
+const char* BedRenderer::getModelVertexShader() {
+    return R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+
+uniform mat4 view_matrix;
+uniform mat4 projection_matrix;
+
+out vec3 FragPos;
+out vec3 Normal;
+out vec2 TexCoord;
+
+void main() {
+    FragPos = aPos;
+    Normal = aNormal;
     
-    glBindVertexArray(m_surface_vao);
+    // Simple UV mapping (project XY to texture coordinates)
+    TexCoord = vec2(aPos.x / 250.0, aPos.y / 210.0);
     
-    glBindBuffer(GL_ARRAY_BUFFER, m_surface_vbo);
-    glBufferData(GL_ARRAY_BUFFER, m_surface_vertices.size() * sizeof(float), m_surface_vertices.data(), GL_STATIC_DRAW);
-    
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_surface_ebo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_surface_indices.size() * sizeof(unsigned int), m_surface_indices.data(), GL_STATIC_DRAW);
-    
-    // Position attribute
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    
-    glBindVertexArray(0);
+    gl_Position = projection_matrix * view_matrix * vec4(aPos, 1.0);
+}
+)";
 }
 
-const char* BedRenderer::getVertexShaderSource() {
+const char* BedRenderer::getModelFragmentShader() {
+    return R"(
+#version 330 core
+in vec3 FragPos;
+in vec3 Normal;
+in vec2 TexCoord;
+
+uniform sampler2D bedTexture;
+uniform bool useTexture;
+
+out vec4 FragColor;
+
+void main() {
+    if (useTexture) {
+        vec3 texColor = texture(bedTexture, TexCoord).rgb;
+        FragColor = vec4(texColor, 1.0);
+    } else {
+        // Dark gray color similar to Prusa bed
+        FragColor = vec4(0.15, 0.15, 0.15, 1.0);
+    }
+}
+)";
+}
+
+const char* BedRenderer::getGridVertexShader() {
     return R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -212,14 +427,14 @@ void main() {
 )";
 }
 
-const char* BedRenderer::getFragmentShaderSource() {
+const char* BedRenderer::getGridFragmentShader() {
     return R"(
 #version 330 core
 out vec4 FragColor;
 
 void main() {
-    // Light gray color for bed elements
-    FragColor = vec4(0.8, 0.8, 0.8, 0.6);
+    // Light gray grid lines
+    FragColor = vec4(0.7, 0.7, 0.7, 0.8);
 }
 )";
 }
@@ -229,13 +444,13 @@ GLuint BedRenderer::compileShader(GLenum type, const char* source) {
     glShaderSource(shader, 1, &source, nullptr);
     glCompileShader(shader);
     
-    // Check compilation
     GLint success;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         GLchar info_log[512];
         glGetShaderInfoLog(shader, 512, nullptr, info_log);
-        std::cerr << "Shader compilation failed: " << info_log << std::endl;
+        std::cerr << "Bed shader compilation failed: " << info_log << std::endl;
+        glDeleteShader(shader);
         return 0;
     }
     
@@ -247,6 +462,8 @@ GLuint BedRenderer::createShaderProgram(const char* vertex_source, const char* f
     GLuint fragment_shader = compileShader(GL_FRAGMENT_SHADER, fragment_source);
     
     if (vertex_shader == 0 || fragment_shader == 0) {
+        if (vertex_shader) glDeleteShader(vertex_shader);
+        if (fragment_shader) glDeleteShader(fragment_shader);
         return 0;
     }
     
@@ -255,17 +472,16 @@ GLuint BedRenderer::createShaderProgram(const char* vertex_source, const char* f
     glAttachShader(program, fragment_shader);
     glLinkProgram(program);
     
-    // Check linking
     GLint success;
     glGetProgramiv(program, GL_LINK_STATUS, &success);
     if (!success) {
         GLchar info_log[512];
         glGetProgramInfoLog(program, 512, nullptr, info_log);
-        std::cerr << "Shader program linking failed: " << info_log << std::endl;
-        return 0;
+        std::cerr << "Bed shader program linking failed: " << info_log << std::endl;
+        glDeleteProgram(program);
+        program = 0;
     }
     
-    // Clean up individual shaders
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
     
