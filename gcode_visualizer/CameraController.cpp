@@ -1,30 +1,124 @@
 #include "CameraController.hpp"
 #include "GCodeVisualizerApp.hpp"  // For Mat4x4 definition
 #include <cmath>
+#include <iostream>
+#include <algorithm>
 
 CameraController::CameraController() 
-    : m_position({125.0f, 105.0f, 100.0f})  // 10cm above center of Prusa bed
-    , m_target({125.0f, 105.0f, 0.0f})      // Center of bed
+    : m_position({0.0f, 0.0f, 500.0f})      // 50cm above center of bed (now at origin)
+    , m_target({0.0f, 0.0f, 0.0f})          // Center of bed at origin
     , m_up({0.0f, 1.0f, 0.0f})              // Y-up
     , m_fov(45.0f)
     , m_near_plane(1.0f)
     , m_far_plane(1000.0f)
     , m_aspect_ratio(1.0f)
 {
+    std::cout << "Camera initialized 50cm above bed center" << std::endl;
 }
 
 void CameraController::setTopView(int width, int height) {
     m_aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
     
-    // Position camera 10cm above the center of the print bed
-    m_position = {125.0f, 105.0f, 100.0f};  // Center of standard Prusa bed + 10cm height
-    m_target = {125.0f, 105.0f, 0.0f};      // Center of bed at Z=0
+    // Position camera 50cm above the center of the print bed (now at origin)
+    m_position = {0.0f, 0.0f, 500.0f};      // Center of bed at origin + 50cm height
+    m_target = {0.0f, 0.0f, 0.0f};          // Center of bed at origin
     m_up = {0.0f, 1.0f, 0.0f};              // Y is up
+    
+    std::cout << "Camera set to top view: 50cm above bed" << std::endl;
 }
 
 void CameraController::setPosition(const std::array<float, 3>& position, const std::array<float, 3>& target) {
     m_position = position;
     m_target = target;
+    
+    float distance = getDistanceFromTarget();
+    std::cout << "Camera position set to (" << position[0] << ", " << position[1] << ", " << position[2] 
+              << ") looking at (" << target[0] << ", " << target[1] << ", " << target[2] 
+              << ") distance: " << distance << "mm" << std::endl;
+}
+
+void CameraController::setDistanceFromSurface(float distance_mm) {
+    // Keep current target, but adjust position to be distance_mm above it
+    m_position[0] = m_target[0];
+    m_position[1] = m_target[1];
+    m_position[2] = m_target[2] + distance_mm;
+    
+    std::cout << "Camera distance set to " << distance_mm << "mm from surface" << std::endl;
+}
+
+void CameraController::setAngleView(float angle_degrees, float distance_mm, int width, int height) {
+    m_aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
+    
+    // Calculate position at an angle
+    float angle_rad = angle_degrees * M_PI / 180.0f;
+    
+    // Position camera at an angle, looking down at the print
+    float x_offset = distance_mm * std::sin(angle_rad) * 0.8f;  // 0.8 to move slightly to side
+    float z_height = distance_mm * std::cos(angle_rad);
+    
+    m_position = {
+        m_target[0] + x_offset,
+        m_target[1] - distance_mm * 0.3f,  // Move back slightly
+        m_target[2] + z_height
+    };
+    
+    std::cout << "Camera set to angled view: " << angle_degrees << "° at " << distance_mm << "mm distance" << std::endl;
+}
+
+void CameraController::setOptimalView(float print_min_x, float print_max_x, 
+                                     float print_min_y, float print_max_y, 
+                                     float print_max_z, int width, int height) {
+    m_aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
+    
+    // Calculate print center
+    float center_x = (print_min_x + print_max_x) / 2.0f;
+    float center_y = (print_min_y + print_max_y) / 2.0f;
+    float center_z = print_max_z / 2.0f;
+    
+    m_target = {center_x, center_y, center_z};
+    
+    // Calculate optimal distance based on print size
+    float print_width = print_max_x - print_min_x;
+    float print_height = print_max_y - print_min_y;
+    float print_depth = print_max_z;
+    
+    calculateOptimalDistance(print_width, print_height, print_depth);
+    
+    std::cout << "Camera set to optimal view for print bounds: " 
+              << print_width << "x" << print_height << "x" << print_depth << "mm" << std::endl;
+}
+
+float CameraController::getDistanceFromTarget() const {
+    float dx = m_position[0] - m_target[0];
+    float dy = m_position[1] - m_target[1];
+    float dz = m_position[2] - m_target[2];
+    return std::sqrt(dx*dx + dy*dy + dz*dz);
+}
+
+void CameraController::calculateOptimalDistance(float print_width, float print_height, float print_depth) {
+    // Calculate distance needed to fit the print in view
+    float max_dimension = std::max({print_width, print_height, print_depth});
+    
+    // Use field of view to calculate required distance
+    float fov_rad = m_fov * M_PI / 180.0f;
+    float distance = (max_dimension / 2.0f) / std::tan(fov_rad / 2.0f);
+    
+    // Add some margin for better view
+    distance *= 1.5f;
+    
+    // Minimum distance of 500mm (50cm) as requested
+    distance = std::max(distance, 500.0f);
+    
+    // Position camera at an angle for better 3D view
+    float angle = 30.0f * M_PI / 180.0f;  // 30 degree angle
+    
+    m_position = {
+        m_target[0] + distance * std::sin(angle),
+        m_target[1] - distance * 0.5f,
+        m_target[2] + distance * std::cos(angle)
+    };
+    
+    std::cout << "Calculated optimal distance: " << distance << "mm" << std::endl;
 }
 
 Mat4x4 CameraController::getViewMatrix() const {

@@ -80,10 +80,10 @@ void TestCubeRenderer::cleanup() {
 }
 
 void TestCubeRenderer::createCubeGeometry() {
-    // Create a 10mm x 10mm x 10mm cube centered at (125, 105, 5) on the Prusa bed
-    // Prusa bed center is at (125, 105), cube bottom at Z=0, top at Z=10
-    float center_x = 125.0f;  // Prusa bed center X
-    float center_y = 105.0f;  // Prusa bed center Y
+    // Create a 10mm x 10mm x 10mm cube centered at (0, 0, 5) on the Prusa bed
+    // Bed center is now at origin (0, 0), cube bottom at Z=0, top at Z=10
+    float center_x = 0.0f;    // Bed center X (now at origin)
+    float center_y = 0.0f;    // Bed center Y (now at origin)
     float size = 10.0f;       // 10mm cube
     float half_size = size / 2.0f;
     

@@ -6,6 +6,8 @@
 #include <sstream>
 #include <cfloat>
 #include <cmath>
+#include <optional>
+#include <tuple>
 
 namespace SimpleGCode {
 
@@ -73,6 +75,9 @@ public:
     
     // Print detailed analysis
     void printAnalysis() const;
+    
+    // Get print bounds (min_x, max_x, min_y, max_y, max_z)
+    std::optional<std::tuple<float, float, float, float, float>> getPrintBounds() const;
     
 private:
     std::vector<GCodeMove> m_moves;

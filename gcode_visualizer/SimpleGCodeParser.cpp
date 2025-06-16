@@ -303,4 +303,19 @@ std::string GCodeParser::cleanLine(const std::string& line) const {
     return clean;
 }
 
+std::optional<std::tuple<float, float, float, float, float>> GCodeParser::getPrintBounds() const {
+    if (m_moves.empty()) {
+        return std::nullopt;
+    }
+    
+    // Return bounds: min_x, max_x, min_y, max_y, max_z
+    return std::make_tuple(
+        m_stats.min_pos.x,
+        m_stats.max_pos.x,
+        m_stats.min_pos.y,
+        m_stats.max_pos.y,
+        m_stats.max_pos.z
+    );
+}
+
 } // namespace SimpleGCode 

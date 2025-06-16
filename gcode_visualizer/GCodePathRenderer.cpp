@@ -221,17 +221,23 @@ void GCodePathRenderer::generatePathGeometry(const std::vector<SimpleGCode::GCod
         getMoveColor(move.type, r, g, b);
         
         // Create line from start to end position
+        // Transform G-code coordinates to match bed model coordinate system
+        // G-code uses front-left corner as (0,0), but bed model is centered around (0,0)
+        // For Prusa MK4: bed model spans -127 to +127 (254mm), -129 to +140 (269mm)
+        // Standard Prusa printable area is roughly 250x210mm starting from (0,0)
+        // We need to offset G-code coordinates to center them on the bed model
+        
         PathVertex start_vertex;
-        start_vertex.x = move.start_pos.x;
-        start_vertex.y = move.start_pos.y;
+        start_vertex.x = move.start_pos.x - 125.0f;  // Center X: shift by half of 250mm
+        start_vertex.y = move.start_pos.y - 105.0f;  // Center Y: shift by half of 210mm  
         start_vertex.z = move.start_pos.z;
         start_vertex.r = r;
         start_vertex.g = g;
         start_vertex.b = b;
         
         PathVertex end_vertex;
-        end_vertex.x = move.end_pos.x;
-        end_vertex.y = move.end_pos.y;
+        end_vertex.x = move.end_pos.x - 125.0f;      // Center X: shift by half of 250mm
+        end_vertex.y = move.end_pos.y - 105.0f;      // Center Y: shift by half of 210mm
         end_vertex.z = move.end_pos.z;
         end_vertex.r = r;
         end_vertex.g = g;

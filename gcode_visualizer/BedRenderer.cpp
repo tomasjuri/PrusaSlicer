@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
+#include <cfloat>
 
 // Note: STB_IMAGE_WRITE_IMPLEMENTATION is already defined in ImageExporter.cpp
 
@@ -169,6 +171,11 @@ bool BedRenderer::loadSTLModel(const std::string& stl_path) {
     
     std::cout << "Loading binary STL with " << num_triangles << " triangles" << std::endl;
     
+    // Track model bounds for proper UV mapping
+    float min_x = FLT_MAX, max_x = -FLT_MAX;
+    float min_y = FLT_MAX, max_y = -FLT_MAX;
+    float min_z = FLT_MAX, max_z = -FLT_MAX;
+    
     // Read each triangle
     for (uint32_t i = 0; i < num_triangles; i++) {
         // Read normal vector (3 floats)
@@ -183,12 +190,24 @@ bool BedRenderer::loadSTLModel(const std::string& stl_path) {
         uint16_t attr_count;
         file.read(reinterpret_cast<char*>(&attr_count), 2);
         
-        // Add vertices to our array
+        // Add vertices to our array and track bounds
         for (int v = 0; v < 3; v++) {
+            float x = vertices[v*3 + 0];
+            float y = vertices[v*3 + 1];
+            float z = vertices[v*3 + 2];
+            
+            // Update bounds
+            min_x = std::min(min_x, x);
+            max_x = std::max(max_x, x);
+            min_y = std::min(min_y, y);
+            max_y = std::max(max_y, y);
+            min_z = std::min(min_z, z);
+            max_z = std::max(max_z, z);
+            
             // Position
-            m_model_vertices.push_back(vertices[v*3 + 0]);
-            m_model_vertices.push_back(vertices[v*3 + 1]);
-            m_model_vertices.push_back(vertices[v*3 + 2]);
+            m_model_vertices.push_back(x);
+            m_model_vertices.push_back(y);
+            m_model_vertices.push_back(z);
             // Normal
             m_model_vertices.push_back(normal[0]);
             m_model_vertices.push_back(normal[1]);
@@ -201,6 +220,12 @@ bool BedRenderer::loadSTLModel(const std::string& stl_path) {
     
     m_model_vertex_count = m_model_vertices.size() / 6;  // 6 floats per vertex (pos + normal)
     m_model_index_count = m_model_indices.size();
+    
+    // Print actual model bounds for debugging
+    std::cout << "STL Model bounds:" << std::endl;
+    std::cout << "  X: " << min_x << " to " << max_x << " (size: " << (max_x - min_x) << ")" << std::endl;
+    std::cout << "  Y: " << min_y << " to " << max_y << " (size: " << (max_y - min_y) << ")" << std::endl;
+    std::cout << "  Z: " << min_z << " to " << max_z << " (size: " << (max_z - min_z) << ")" << std::endl;
     
     return m_model_vertex_count > 0;
 }
@@ -223,29 +248,63 @@ void BedRenderer::parseSTLTriangle(const std::string& line, std::vector<float>& 
 }
 
 bool BedRenderer::loadSVGTexture(const std::string& svg_path) {
-    // For now, create a simple procedural texture since SVG loading is complex
-    // In a full implementation, you'd use librsvg or similar to convert SVG to PNG
-    
+    // Create a realistic Prusa-style bed texture
     const int tex_width = 512;
     const int tex_height = 512;
     std::vector<unsigned char> texture_data(tex_width * tex_height * 3);
     
-    // Create a simple dark gray texture with grid pattern
+    // Create a realistic Prusa MK4 bed texture
     for (int y = 0; y < tex_height; y++) {
         for (int x = 0; x < tex_width; x++) {
             int idx = (y * tex_width + x) * 3;
             
-            // Dark base color
-            unsigned char base_color = 40;
+            // Base color - darker steel gray (more realistic for Prusa MK4)
+            unsigned char base_r = 85;
+            unsigned char base_g = 85; 
+            unsigned char base_b = 90;  // Slightly bluer like steel
             
-            // Add grid lines every 32 pixels
-            if ((x % 32 == 0) || (y % 32 == 0)) {
-                base_color = 60;  // Slightly lighter for grid
+            // Add fine random texture to simulate steel surface
+            float fine_noise = (std::sin(x * 0.3f) * std::cos(y * 0.3f)) * 8.0f;
+            fine_noise += (std::sin(x * 0.05f) + std::sin(y * 0.05f)) * 5.0f;
+            
+            base_r = std::clamp((int)(base_r + fine_noise), 75, 105);
+            base_g = std::clamp((int)(base_g + fine_noise), 75, 105);
+            base_b = std::clamp((int)(base_b + fine_noise), 80, 110);
+            
+            // Add measurement grid every 50 pixels (represents ~25mm on actual bed)
+            bool is_grid_line = (x % 50 < 1) || (y % 50 < 1);
+            if (is_grid_line) {
+                base_r = std::clamp(base_r + 25, 0, 255);  // Lighter grid lines
+                base_g = std::clamp(base_g + 25, 0, 255);
+                base_b = std::clamp(base_b + 25, 0, 255);
             }
             
-            texture_data[idx + 0] = base_color;  // R
-            texture_data[idx + 1] = base_color;  // G
-            texture_data[idx + 2] = base_color;  // B
+            // Add major grid every 100 pixels (represents ~50mm)
+            bool is_major_grid = (x % 100 < 2) || (y % 100 < 2);
+            if (is_major_grid) {
+                base_r = std::clamp(base_r + 15, 0, 255);
+                base_g = std::clamp(base_g + 15, 0, 255);
+                base_b = std::clamp(base_b + 15, 0, 255);
+            }
+            
+            // Add center cross lines for origin reference (Prusa logo area)
+            if ((x > tex_width/2 - 3 && x < tex_width/2 + 3) || 
+                (y > tex_height/2 - 3 && y < tex_height/2 + 3)) {
+                base_r = std::clamp(base_r + 30, 0, 255);
+                base_g = std::clamp(base_g + 25, 0, 255);  // Slightly orange tint
+                base_b = std::clamp(base_b + 10, 0, 255);
+            }
+            
+            // Add corner markers
+            if (((x < 20 || x > tex_width - 20) && (y < 20 || y > tex_height - 20))) {
+                base_r = std::clamp(base_r + 20, 0, 255);
+                base_g = std::clamp(base_g + 15, 0, 255);
+                base_b = std::clamp(base_b + 5, 0, 255);
+            }
+            
+            texture_data[idx + 0] = base_r;  // R
+            texture_data[idx + 1] = base_g;  // G
+            texture_data[idx + 2] = base_b;  // B
         }
     }
     
@@ -255,8 +314,8 @@ bool BedRenderer::loadSVGTexture(const std::string& svg_path) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tex_width, tex_height, 0, GL_RGB, GL_UNSIGNED_BYTE, texture_data.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glBindTexture(GL_TEXTURE_2D, 0);
     
     return true;
@@ -270,29 +329,32 @@ bool BedRenderer::loadPNGTexture(const std::string& png_path) {
 void BedRenderer::createGridOverlay() {
     m_grid_vertices.clear();
     
-    // Create a simple grid overlay (250x210mm Prusa bed)
-    float width = 250.0f;
-    float height = 210.0f;
+    // Create grid overlay matching STL model coordinate system
+    // STL bounds: X: -127 to +127 (254mm), Y: -129 to +140 (269mm)
+    float min_x = -127.0f;
+    float max_x = 127.0f;
+    float min_y = -129.0f;
+    float max_y = 140.0f;
     float spacing = 10.0f;
     
-    // Vertical lines
-    for (float x = 0; x <= width; x += spacing) {
+    // Vertical lines (constant X, varying Y)
+    for (float x = min_x; x <= max_x; x += spacing) {
         m_grid_vertices.push_back(x);
-        m_grid_vertices.push_back(0.0f);
+        m_grid_vertices.push_back(min_y);
         m_grid_vertices.push_back(0.1f);  // Slightly above the bed
         
         m_grid_vertices.push_back(x);
-        m_grid_vertices.push_back(height);
+        m_grid_vertices.push_back(max_y);
         m_grid_vertices.push_back(0.1f);
     }
     
-    // Horizontal lines
-    for (float y = 0; y <= height; y += spacing) {
-        m_grid_vertices.push_back(0.0f);
+    // Horizontal lines (constant Y, varying X)
+    for (float y = min_y; y <= max_y; y += spacing) {
+        m_grid_vertices.push_back(min_x);
         m_grid_vertices.push_back(y);
         m_grid_vertices.push_back(0.1f);
         
-        m_grid_vertices.push_back(width);
+        m_grid_vertices.push_back(max_x);
         m_grid_vertices.push_back(y);
         m_grid_vertices.push_back(0.1f);
     }
@@ -381,8 +443,13 @@ void main() {
     FragPos = aPos;
     Normal = aNormal;
     
-    // Simple UV mapping (project XY to texture coordinates)
-    TexCoord = vec2(aPos.x / 250.0, aPos.y / 210.0);
+    // UV mapping using actual STL model bounds
+    // X: -127 to +127 (254mm), Y: -129 to +140 (269mm)
+    float u = (aPos.x + 127.0) / 254.0;  // Map X range to 0-1
+    float v = (aPos.y + 129.0) / 269.0;  // Map Y range to 0-1
+    
+    // Use texture coordinates directly without scaling for proper alignment
+    TexCoord = vec2(u, v);
     
     gl_Position = projection_matrix * view_matrix * vec4(aPos, 1.0);
 }
@@ -404,10 +471,34 @@ out vec4 FragColor;
 void main() {
     if (useTexture) {
         vec3 texColor = texture(bedTexture, TexCoord).rgb;
-        FragColor = vec4(texColor, 1.0);
+        
+        // Enhanced lighting model for better contrast and realism
+        vec3 lightDir1 = normalize(vec3(0.6, 0.6, 1.0));    // Primary light from above
+        vec3 lightDir2 = normalize(vec3(-0.3, 0.3, 0.5));   // Secondary fill light
+        vec3 normal = normalize(Normal);
+        
+        // Calculate diffuse lighting from multiple sources
+        float diffuse1 = max(dot(normal, lightDir1), 0.0);
+        float diffuse2 = max(dot(normal, lightDir2), 0.0) * 0.3;  // Weaker fill light
+        float ambient = 0.4;  // Increased ambient for better visibility
+        
+        float totalLight = ambient + diffuse1 + diffuse2;
+        totalLight = min(totalLight, 1.2);  // Prevent overexposure
+        
+        // Apply lighting and increase contrast
+        vec3 finalColor = texColor * totalLight;
+        
+        // Slight contrast boost for better definition
+        finalColor = pow(finalColor, vec3(0.9));  // Gamma adjustment
+        
+        FragColor = vec4(finalColor, 1.0);
     } else {
-        // Dark gray color similar to Prusa bed
-        FragColor = vec4(0.15, 0.15, 0.15, 1.0);
+        // Medium gray color with lighting
+        vec3 lightDir = normalize(vec3(0.5, 0.5, 1.0));
+        vec3 normal = normalize(Normal);
+        float lightIntensity = max(dot(normal, lightDir), 0.4);
+        vec3 bedColor = vec3(0.4, 0.4, 0.4);
+        FragColor = vec4(bedColor * lightIntensity, 1.0);
     }
 }
 )";

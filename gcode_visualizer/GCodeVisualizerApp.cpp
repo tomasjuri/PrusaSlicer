@@ -88,6 +88,18 @@ bool GCodeVisualizerApp::loadGCode(const std::string& filename) {
     // Load moves into path renderer
     m_gcode_path_renderer->setGCodeMoves(moves);
     
+    // Set up optimal camera view based on print bounds
+    auto bounds = m_gcode_parser->getPrintBounds();
+    if (bounds.has_value()) {
+        auto [min_x, max_x, min_y, max_y, max_z] = bounds.value();
+        std::cout << "Setting optimal camera view for print bounds..." << std::endl;
+        m_camera_controller->setOptimalView(min_x, max_x, min_y, max_y, max_z, WINDOW_WIDTH, WINDOW_HEIGHT);
+    } else {
+        // Fallback to standard positioning 50cm from surface
+        std::cout << "Using standard camera positioning..." << std::endl;
+        m_camera_controller->setDistanceFromSurface(500.0f);  // 50cm
+    }
+    
     m_gcode_loaded = true;
     std::cout << "G-code loaded successfully!" << std::endl;
     return true;
@@ -257,7 +269,8 @@ void GCodeVisualizerApp::cleanupOffscreenFramebuffer() {
 }
 
 void GCodeVisualizerApp::setupTopViewCamera() {
-    // Position camera 10cm above the center of the print bed
+    // Camera positioning is now done automatically after G-code loading
+    // This method maintains the original camera setup if needed
     m_camera_controller->setTopView(WINDOW_WIDTH, WINDOW_HEIGHT);
 }
 
