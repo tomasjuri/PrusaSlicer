@@ -17,6 +17,7 @@
 #include "ImageExporter.hpp"
 #include "BedRenderer.hpp"
 #include "TestCubeRenderer.hpp"
+#include "GCodePathRenderer.hpp"
 
 // Simple matrix type for our camera
 struct Mat4x4 {
@@ -71,6 +72,7 @@ private:
     std::unique_ptr<ImageExporter> m_image_exporter;
     std::unique_ptr<BedRenderer> m_bed_renderer;
     std::unique_ptr<TestCubeRenderer> m_test_cube_renderer;
+    std::unique_ptr<GCodePathRenderer> m_gcode_path_renderer;
     
     // State
     bool m_gcode_loaded = false;

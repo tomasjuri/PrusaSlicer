@@ -42,10 +42,15 @@ bool GCodeVisualizerApp::initialize() {
     m_image_exporter = std::make_unique<ImageExporter>(WINDOW_WIDTH, WINDOW_HEIGHT);
     m_bed_renderer = std::make_unique<BedRenderer>();
     m_test_cube_renderer = std::make_unique<TestCubeRenderer>();
+    m_gcode_path_renderer = std::make_unique<GCodePathRenderer>();
     
     // Initialize components
     m_bed_renderer->initialize(250.0f, 210.0f, 10.0f);  // Prusa bed: 250x210mm with 10mm grid
     m_test_cube_renderer->initialize();
+    if (!m_gcode_path_renderer->initialize()) {
+        std::cerr << "Failed to initialize G-code path renderer" << std::endl;
+        return false;
+    }
     
     std::cout << "Initialization complete!" << std::endl;
     return true;
@@ -73,6 +78,9 @@ bool GCodeVisualizerApp::loadGCode(const std::string& filename) {
     
     // Print detailed analysis
     m_gcode_parser->printAnalysis();
+    
+    // Load moves into path renderer
+    m_gcode_path_renderer->setGCodeMoves(moves);
     
     m_gcode_loaded = true;
     std::cout << "G-code loaded successfully!" << std::endl;
@@ -131,6 +139,11 @@ void GCodeVisualizerApp::cleanup() {
     if (m_test_cube_renderer) {
         m_test_cube_renderer->cleanup();
         m_test_cube_renderer.reset();
+    }
+    
+    if (m_gcode_path_renderer) {
+        m_gcode_path_renderer->cleanup();
+        m_gcode_path_renderer.reset();
     }
     
     m_bed_renderer.reset();
@@ -250,9 +263,11 @@ void GCodeVisualizerApp::renderScene() {
     // Render print bed
     m_bed_renderer->render(view_matrix, projection_matrix);
     
-    // Render test cube to verify pipeline
-    m_test_cube_renderer->render(view_matrix, projection_matrix);
+    // Render G-code paths (this is the main visualization!)
+    if (m_gcode_loaded) {
+        m_gcode_path_renderer->render(view_matrix, projection_matrix);
+    }
     
-    // TODO: Render G-code paths
-    // For now, we just render the test cube and bed to verify the pipeline works
+    // Optionally render test cube (can be removed later)
+    // m_test_cube_renderer->render(view_matrix, projection_matrix);
 } 

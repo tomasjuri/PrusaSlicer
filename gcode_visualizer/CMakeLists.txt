@@ -26,6 +26,7 @@ set(GCODE_VISUALIZER_SOURCES
     BedRenderer.cpp
     ImageExporter.cpp
     TestCubeRenderer.cpp
+    GCodePathRenderer.cpp
 )
 
 # Create executable
