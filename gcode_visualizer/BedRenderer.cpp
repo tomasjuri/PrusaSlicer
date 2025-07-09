@@ -152,15 +152,17 @@ void BedRenderer::render(const Mat4x4& view_matrix, const Mat4x4& projection_mat
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
-    // Fixed rendering logic to match PrusaSlicer:
-    // Test: render only textured model without explicit grid (SVG might contain grid)
+    // FIXED: Implement PrusaSlicer's proper two-layer system!
+    // 1. Black STL model base (solid dark material)
+    // 2. Separate flat textured surface on top (with proper SVG scaling)
     
     if (m_has_model && m_model_index_count > 0) {
-        // System bed: render 3D STL model with texture applied (proper 3D shape!)
-        renderTexturedModel(view_matrix, projection_matrix);
+        // System bed (like PrusaSlicer's render_system):
+        // Layer 1: Render STL model as solid black base (like render_model)
+        renderModel(view_matrix, projection_matrix);
         
-        // TEMPORARILY REMOVED: explicit grid rendering to test for double-grid issue
-        // renderGrid(view_matrix, projection_matrix);
+        // Layer 2: Render separate flat textured surface on top (like render_texture)
+        renderTexture(view_matrix, projection_matrix);
     } else {
         // Custom bed: render textured surface + grid (like main slicer's render_default)
         renderTextureWithGrid(view_matrix, projection_matrix);
@@ -171,19 +173,37 @@ void BedRenderer::render(const Mat4x4& view_matrix, const Mat4x4& projection_mat
 }
 
 void BedRenderer::renderModel(const Mat4x4& view_matrix, const Mat4x4& projection_matrix) {
+    // Render 3D STL bed model as solid black base (like PrusaSlicer's render_model)
+    if (!m_has_model || m_model_index_count == 0) return;
+    
     glUseProgram(m_model_shader);
     
-    // Set up professional lighting (matching main slicer's gouraud shader)
+    // Create view-model matrix with proper offset (like PrusaSlicer)
+    Mat4x4 view_model_matrix;
+    for (int i = 0; i < 16; i++) {
+        view_model_matrix.m_data[i] = view_matrix.data()[i];
+    }
+    
+    // Apply PrusaSlicer's model offset: center + slightly down to avoid Z-fighting
+    view_model_matrix.m_data[12] += m_model_offset_x;   // center X
+    view_model_matrix.m_data[13] += m_model_offset_y;   // center Y  
+    view_model_matrix.m_data[14] += m_model_offset_z;   // move down (-0.03 like PrusaSlicer)
+    
+    // Set uniforms (only those that exist in the gouraud shader)
     GLint view_loc = glGetUniformLocation(m_model_shader, "view_model_matrix");
     GLint proj_loc = glGetUniformLocation(m_model_shader, "projection_matrix");
-    glUniformMatrix4fv(view_loc, 1, GL_FALSE, view_matrix.data());
-    glUniformMatrix4fv(proj_loc, 1, GL_FALSE, projection_matrix.data());
-    
-    // Set professional uniform color
     GLint color_loc = glGetUniformLocation(m_model_shader, "uniform_color");
-    glUniform4f(color_loc, 0.8f, 0.8f, 0.8f, 1.0f);
     
-    // Render the model
+    // Set the uniforms
+    if (view_loc >= 0) glUniformMatrix4fv(view_loc, 1, GL_FALSE, view_model_matrix.data());
+    if (proj_loc >= 0) glUniformMatrix4fv(proj_loc, 1, GL_FALSE, projection_matrix.data());
+    
+    // Set model color to be visible (dark gray instead of black)
+    if (color_loc >= 0) {
+        glUniform4f(color_loc, 0.3f, 0.3f, 0.3f, 1.0f);
+    }
+    
+    // Render STL model as solid dark material
     glBindVertexArray(m_model_vao);
     glDrawElements(GL_TRIANGLES, m_model_index_count, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
@@ -236,33 +256,74 @@ void BedRenderer::renderTexturedModel(const Mat4x4& view_matrix, const Mat4x4& p
 }
 
 void BedRenderer::renderTexture(const Mat4x4& view_matrix, const Mat4x4& projection_matrix) {
-    // Only render texture if we have a model (like main slicer's logic)
-    if (!m_has_model) return;
+    // Render flat textured surface on top of black STL base (like PrusaSlicer's render_texture)
+    if (!m_has_model || !m_texture_id) return;
     
     glUseProgram(m_texture_shader);
     
-    // Set uniforms
+    // Use identity matrix for flat surface at Z=0 (above STL base at Z=-0.03)
     GLint view_loc = glGetUniformLocation(m_texture_shader, "view_model_matrix");
     GLint proj_loc = glGetUniformLocation(m_texture_shader, "projection_matrix");
     glUniformMatrix4fv(view_loc, 1, GL_FALSE, view_matrix.data());
     glUniformMatrix4fv(proj_loc, 1, GL_FALSE, projection_matrix.data());
     
-    // Set texture uniforms (matching main slicer's printbed shader)
+    // Set texture uniforms (matching PrusaSlicer's printbed shader)
     GLint transparent_loc = glGetUniformLocation(m_texture_shader, "transparent_background");
     GLint svg_loc = glGetUniformLocation(m_texture_shader, "svg_source");
     glUniform1i(transparent_loc, 0);
     glUniform1i(svg_loc, 1);  // Use SVG-style rendering
     
-    // Bind texture
+    // Bind SVG texture
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_texture_id);
     GLint tex_loc = glGetUniformLocation(m_texture_shader, "in_texture");
     glUniform1i(tex_loc, 0);
     
-    // Render bed surface
-    glBindVertexArray(m_triangle_vao);
-    glDrawElements(GL_TRIANGLES, m_triangle_index_count, GL_UNSIGNED_INT, 0);
+    // FIXED: Use actual bed dimensions, not SVG dimensions!
+    // MK4 bed is 250×210mm, use that for proper scaling
+    float bed_width = 250.0f;   // MK4 bed width
+    float bed_height = 210.0f;  // MK4 bed height  
+    float half_w = bed_width / 2.0f;
+    float half_h = bed_height / 2.0f;
+    
+    // Create flat quad vertices at Z=0 with FIXED texture coordinates
+    float flat_surface[] = {
+        // Position (x, y, z)     // Texture coords (u, v) - FIXED orientation
+        -half_w, -half_h, 0.0f,   0.0f, 1.0f,  // Bottom-left  -> top-left in texture
+         half_w, -half_h, 0.0f,   1.0f, 1.0f,  // Bottom-right -> top-right in texture
+         half_w,  half_h, 0.0f,   1.0f, 0.0f,  // Top-right    -> bottom-right in texture
+        -half_w,  half_h, 0.0f,   0.0f, 0.0f   // Top-left     -> bottom-left in texture
+    };
+    
+    unsigned int flat_indices[] = {0, 1, 2, 2, 3, 0};
+    
+    // Create temporary VAO/VBO for flat surface
+    GLuint temp_vao, temp_vbo, temp_ebo;
+    glGenVertexArrays(1, &temp_vao);
+    glGenBuffers(1, &temp_vbo);
+    glGenBuffers(1, &temp_ebo);
+    
+    glBindVertexArray(temp_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, temp_vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(flat_surface), flat_surface, GL_STATIC_DRAW);
+    
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, temp_ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(flat_indices), flat_indices, GL_STATIC_DRAW);
+    
+    // Set vertex attributes for printbed shader (position at 0, texcoords at 1)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    
+    // Render flat textured surface
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    
+    // Cleanup temporary buffers
     glBindVertexArray(0);
+    glDeleteVertexArrays(1, &temp_vao);
+    glDeleteBuffers(1, &temp_vbo);
+    glDeleteBuffers(1, &temp_ebo);
     
     glUseProgram(0);
 }
@@ -453,10 +514,11 @@ bool BedRenderer::loadSTLModel(const std::string& stl_path) {
     m_model_vertex_count = m_model_vertices.size() / 8;  // 8 floats per vertex
     m_model_index_count = m_model_indices.size();
     
-    // Calculate model offset (like main slicer)
-    m_model_offset_x = -(min_x + max_x) / 2.0f;
-    m_model_offset_y = -(min_y + max_y) / 2.0f;
-    m_model_offset_z = -0.03f;  // Slight offset to avoid z-fighting
+    // Calculate model offset (like PrusaSlicer's approach)
+    // Center the model and move it slightly down to avoid Z-fighting with texture surface
+    m_model_offset_x = -(min_x + max_x) / 2.0f;  // Center X
+    m_model_offset_y = -(min_y + max_y) / 2.0f;  // Center Y
+    m_model_offset_z = -0.03f;  // Move down slightly (like PrusaSlicer's -0.03 offset)
     
     std::cout << "Model loaded, bounds: X[" << min_x << "," << max_x << "] Y[" << min_y << "," << max_y << "] Z[" << min_z << "," << max_z << "]" << std::endl;
     
