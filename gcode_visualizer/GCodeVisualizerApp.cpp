@@ -13,7 +13,7 @@ GCodeVisualizerApp::~GCodeVisualizerApp() {
     cleanup();
 }
 
-bool GCodeVisualizerApp::initialize() {
+bool GCodeVisualizerApp::initialize(const std::string& printer_model) {
     std::cout << "Initializing G-Code Visualizer..." << std::endl;
     
     // Initialize GLFW
@@ -44,11 +44,10 @@ bool GCodeVisualizerApp::initialize() {
     m_test_cube_renderer = std::make_unique<TestCubeRenderer>();
     m_gcode_path_renderer = std::make_unique<GCodePathRenderer>();
     
-    // Initialize components with Prusa MK4 bed assets
-    std::string stl_path = "/Users/tomasjurica/projects/PrusaSlicer-1/resources/profiles/PrusaResearch/mk4_bed.stl";
-    std::string svg_path = "/Users/tomasjurica/projects/PrusaSlicer-1/resources/profiles/PrusaResearch/mk4.svg";
-    if (!m_bed_renderer->initialize(stl_path, svg_path)) {
-        std::cerr << "Failed to initialize bed renderer with Prusa assets, using fallback" << std::endl;
+    // Initialize bed renderer with automatic printer configuration
+    std::cout << "Initializing bed renderer for printer model: " << printer_model << std::endl;
+    if (!m_bed_renderer->initializeFromPrinterModel(printer_model)) {
+        std::cerr << "Failed to initialize bed renderer with " << printer_model << " configuration, using fallback" << std::endl;
         // Fallback to simple bed
         m_bed_renderer->initialize("", "");
     }

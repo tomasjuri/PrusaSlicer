@@ -39,7 +39,7 @@ public:
     ~GCodeVisualizerApp();
     
     // Initialize the application (OpenGL context, etc.)
-    bool initialize();
+    bool initialize(const std::string& printer_model = "MK4S");
     
     // Load a G-code file
     bool loadGCode(const std::string& filename);
