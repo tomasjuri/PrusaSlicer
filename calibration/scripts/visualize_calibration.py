@@ -79,6 +79,22 @@ def draw_camera_frustum_simple(ax, cam_pos, cam_rmat, scale=0.1, color='purple')
         ax.plot([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]], 
                color=color, alpha=0.7, linewidth=2)
 
+def set_axes_equal(ax):
+    '''Set 3D plot axes to equal scale.'''
+    x_limits = ax.get_xlim3d()
+    y_limits = ax.get_ylim3d()
+    z_limits = ax.get_zlim3d()
+    x_range = abs(x_limits[1] - x_limits[0])
+    y_range = abs(y_limits[1] - y_limits[0])
+    z_range = abs(z_limits[1] - z_limits[0])
+    max_range = max([x_range, y_range, z_range])
+    x_middle = np.mean(x_limits)
+    y_middle = np.mean(y_limits)
+    z_middle = np.mean(z_limits)
+    ax.set_xlim3d([x_middle - max_range/2, x_middle + max_range/2])
+    ax.set_ylim3d([y_middle - max_range/2, y_middle + max_range/2])
+    ax.set_zlim3d([z_middle - max_range/2, z_middle + max_range/2])
+
 def visualize_calibration(json_file, image_name):
     data = load_calibration_data(json_file)
     if image_name not in data['image_poses']:
@@ -136,6 +152,7 @@ def visualize_calibration(json_file, image_name):
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=25, azim=45)
+    set_axes_equal(ax)
     ax.text2D(0.02, 0.95, f'Camera Position: ({camera_pos[0]:.3f}, {camera_pos[1]:.3f}, {camera_pos[2]:.3f})',
              transform=ax.transAxes, fontsize=10,
              bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.8))
