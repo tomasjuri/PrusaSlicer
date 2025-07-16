@@ -30,6 +30,9 @@ def chessboard_calibration(chessboard_dir, chessboard_size=(9, 6), square_size=0
     print("Step 1: Chessboard Calibration")
     print("=" * 40)
     
+    # Ensure output directories exist
+    os.makedirs("calibration/out/imgs", exist_ok=True)
+    
     # Check if intrinsics already exist
     intrinsics_file = "calibration/out/camera_intrinsics.json"
     if os.path.exists(intrinsics_file):
@@ -85,7 +88,7 @@ def chessboard_calibration(chessboard_dir, chessboard_size=(9, 6), square_size=0
             
             # Draw corners
             cv2.drawChessboardCorners(img, chessboard_size, corners2, ret)
-            debug_path = f"calibration/out/debug_chessboard_{img_path.name}"
+            debug_path = f"calibration/out/imgs/debug_chessboard_{img_path.name}"
             cv2.imwrite(debug_path, img)
             print(f"  Found corners, saved debug image")
         else:
@@ -198,6 +201,9 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
     print("\nStep 2: ArUco Pose Estimation")
     print("=" * 40)
     
+    # Ensure output directories exist
+    os.makedirs("calibration/out/imgs", exist_ok=True)
+    
     # Create ArUco detector
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_7X7_250)
     aruco_params = cv2.aruco.DetectorParameters()
@@ -291,7 +297,7 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
                     cv2.drawFrameAxes(img, camera_matrix, dist_coeffs, rvec, tvec, marker_size)
             
             # Save debug image
-            debug_path = f"calibration/out/debug_aruco_{img_path.name}"
+            debug_path = f"calibration/out/imgs/debug_aruco_{img_path.name}"
             cv2.imwrite(debug_path, img)
             print(f"  Saved debug image with pose visualization")
         else:
@@ -304,6 +310,9 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
 
 def save_calibration_results(camera_matrix, dist_coeffs, poses, marker_ids, image_poses, pose_errors, output_file="calibration/out/camera_calibration.json"):
     """Save calibration results to JSON file"""
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
     
     # Convert poses to lists for JSON serialization
     poses_list = []
