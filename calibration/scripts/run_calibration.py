@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import argparse
 from collections import defaultdict
-from scipy.optimize import least_squares
 import matplotlib.pyplot as plt
 
 def chessboard_calibration(chessboard_dir, chessboard_size=(9, 6), square_size=0.025):
@@ -134,78 +133,28 @@ def chessboard_calibration(chessboard_dir, chessboard_size=(9, 6), square_size=0
     
     return camera_matrix, dist_coeffs, calibration_error
 
-def compute_median_pose(poses):
-    """
-    Compute median pose from a list of poses
-    
-    Args:
-        poses: List of (rvec, tvec) tuples
-    
-    Returns:
-        median_rvec: Median rotation vector
-        median_tvec: Median translation vector
-        pose_errors: List of pose errors from median
-    """
-    if len(poses) == 1:
-        return poses[0][0], poses[0][1], [0.0]
-    
-    # Convert rotation vectors to rotation matrices
-    rmatrices = []
-    for rvec, _ in poses:
-        rmat, _ = cv2.Rodrigues(rvec)
-        rmatrices.append(rmat)
-    
-    # Compute median rotation matrix
-    rmatrices_array = np.array(rmatrices)
-    median_rmat = np.median(rmatrices_array, axis=0)
-    
-    # Convert back to rotation vector
-    median_rvec, _ = cv2.Rodrigues(median_rmat)
-    
-    # Compute median translation vector
-    tvecs = np.array([tvec.flatten() for _, tvec in poses])
-    median_tvec = np.median(tvecs, axis=0).reshape(3, 1)
-    
-    # Compute pose errors
-    pose_errors = []
-    for rvec, tvec in poses:
-        # Rotation error (angle difference in degrees)
-        rmat, _ = cv2.Rodrigues(rvec)
-        angle_diff = np.arccos(np.clip((np.trace(rmat.T @ median_rmat) - 1) / 2, -1, 1))
-        rotation_error = np.degrees(angle_diff)
-        
-        # Translation error (Euclidean distance)
-        translation_error = np.linalg.norm(tvec.flatten() - median_tvec.flatten())
-        
-        # Combined error (weighted)
-        total_error = rotation_error + translation_error * 1000  # Scale translation error
-        pose_errors.append(total_error)
-    
-    return median_rvec, median_tvec, pose_errors
-
 def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.04, marker_positions_file="calibration/data/aruco_positions.json"):
     """
-    Step 2: ArUco marker pose estimation for camera extrinsics with improvements:
+    Step 2: ArUco marker pose estimation for camera extrinsics
     - Image undistortion
     - Subpixel corner refinement
     - Multi-marker simultaneous pose estimation
-    - Bundle adjustment optimization
     
     Args:
         aruco_dir: Directory containing ArUco marker images
         camera_matrix: Camera intrinsic matrix from chessboard calibration
         dist_coeffs: Distortion coefficients from chessboard calibration
         marker_size: Size of ArUco markers in meters
-        marker_positions_file: Path to JSON file containing known marker positions in world coordinates
+        marker_positions_file: Path to JSON file containing known marker positions in printer coordinates
     
     Returns:
         poses: List of camera poses (rotation vectors, translation vectors)
         marker_ids: List of detected marker IDs
-        image_poses: Dictionary of optimized poses per image
+        image_poses: Dictionary of poses per image
         pose_errors: Dictionary of pose errors per image
     """
-    print("\nStep 2: Enhanced ArUco Pose Estimation")
-    print("=" * 50)
+    print("\nStep 2: ArUco Pose Estimation")
+    print("=" * 40)
     
     # Ensure output directories exist
     os.makedirs("calibration/out/imgs", exist_ok=True)
@@ -247,15 +196,6 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
     image_poses = {}
     pose_errors = {}
     
-    # Data for bundle adjustment
-    all_rvecs = []
-    all_tvecs = []
-    all_object_points = []
-    all_image_points = []
-    all_camera_matrices = []
-    all_dist_coeffs = []
-    valid_images = []
-    
     for img_path in image_files:
         print(f"Processing: {img_path.name}")
         
@@ -268,7 +208,7 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
         # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # IMPROVEMENT 1: Undistort the image
+        # Undistort the image
         undistorted_gray = cv2.undistort(gray, camera_matrix, dist_coeffs)
         
         # Invert for white printed markers
@@ -280,24 +220,23 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
         if ids is not None:
             print(f"  Detected {len(ids)} markers: {[id[0] for id in ids]}")
             
-            # IMPROVEMENT 2: Apply subpixel corner refinement
+            # Apply subpixel corner refinement
             refined_corners = apply_subpixel_refinement(undistorted_gray, corners)
             
-            # IMPROVEMENT 3: Multi-marker simultaneous pose estimation
+            # Multi-marker simultaneous pose estimation
             rvec, tvec, success = multi_marker_pose_estimation(
                 refined_corners, ids, camera_matrix, dist_coeffs, 
-                marker_size, marker_positions, coordinate_transform=True
+                marker_size, marker_positions
             )
             
             if success:
-                # Store data for bundle adjustment
-                all_rvecs.append(rvec)
-                all_tvecs.append(tvec)
-                all_camera_matrices.append(camera_matrix)
-                all_dist_coeffs.append(dist_coeffs)
-                valid_images.append(img_path.name)
+                # Store individual marker poses
+                for i, marker_id in enumerate(ids):
+                    poses.append((rvec, tvec))
+                    marker_ids.append(marker_id[0])
                 
-                # Store object points and image points for bundle adjustment
+                # Calculate reprojection error for this pose
+                # Collect object and image points for reprojection error calculation
                 img_object_points = []
                 img_image_points = []
                 
@@ -305,16 +244,16 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
                     marker_id = marker_id[0]
                     
                     if marker_id in marker_positions:
-                        # Use known marker position in world coordinates
-                        marker_center = np.array(marker_positions[marker_id])
+                        # Use known marker position in printer coordinates - transform to ArUco coordinates
+                        marker_center_printer = np.array(marker_positions[marker_id])
                         
-                        # Apply coordinate transformation (printer -> OpenCV coordinates)
+                        # Transform from printer coordinates to ArUco coordinates
                         transform_matrix = np.array([
                             [1,  0,  0],  # X stays the same
-                            [0, -1,  0],  # Y inverted 
-                            [0,  0, -1]   # Z inverted
+                            [0, -1,  0],  # Y inverted: printer back -> ArUco down
+                            [0,  0, -1]   # Z inverted: printer up -> ArUco forward
                         ])
-                        marker_center = transform_matrix @ marker_center
+                        marker_center = transform_matrix @ marker_center_printer
                         
                         half_size = marker_size / 2
                         marker_corners_3d = marker_center + np.array([
@@ -333,21 +272,7 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
                     img_object_points.append(marker_corners_3d)
                     img_image_points.append(refined_corners[i][0])
                 
-                # Store combined points for this image
                 if img_object_points:
-                    all_object_points.append(np.vstack(img_object_points).astype(np.float32))
-                    all_image_points.append(np.vstack(img_image_points).astype(np.float32))
-                else:
-                    all_object_points.append(np.array([]).reshape(0, 3))
-                    all_image_points.append(np.array([]).reshape(0, 2))
-                
-                # Store individual marker poses for compatibility
-                for i, marker_id in enumerate(ids):
-                    poses.append((rvec, tvec))
-                    marker_ids.append(marker_id[0])
-                
-                # Calculate reprojection error for this pose
-                if len(img_object_points) > 0:
                     projected_points, _ = cv2.projectPoints(
                         np.vstack(img_object_points), rvec, tvec, camera_matrix, dist_coeffs
                     )
@@ -367,138 +292,42 @@ def aruco_pose_estimation(aruco_dir, camera_matrix, dist_coeffs, marker_size=0.0
                         'reprojection_error': reprojection_error,
                         'num_markers': len(ids)
                     }
-                else:
-                    all_object_points.append(np.array([]).reshape(0, 3))
-                    all_image_points.append(np.array([]).reshape(0, 2))
             else:
                 print(f"  Failed to estimate pose for this image")
-                all_rvecs.append(None)
-                all_tvecs.append(None)
-                all_camera_matrices.append(camera_matrix)
-                all_dist_coeffs.append(dist_coeffs)
-                all_object_points.append(np.array([]).reshape(0, 3))
-                all_image_points.append(np.array([]).reshape(0, 2))
             
             # Draw detected markers
             cv2.aruco.drawDetectedMarkers(img, refined_corners, ids)
             
-            # Draw pose axes and printer bed if successful
+            # Draw individual marker axes
             if success and rvec is not None and tvec is not None:
-                # Draw coordinate axes for the multi-marker pose
-                cv2.drawFrameAxes(img, camera_matrix, dist_coeffs, rvec, tvec, marker_size * 2)
-                
-                # Draw printer bed outline based on marker positions
-                # Markers are centered at their positions with 40mm size
-                # So bed starts 20mm before first marker and ends 20mm after last marker
-                bed_corners_3d = np.array([
-                    [0.020, 0.020, 0.0],  # Start 20mm before first marker (40-20, 40-20)
-                    [0.240, 0.020, 0.0],  # End 20mm after last marker (220+20, 40-20)
-                    [0.240, 0.190, 0.0],  # Far corner (220+20, 170+20)
-                    [0.020, 0.190, 0.0],  # Y-axis corner (40-20, 170+20)
-                    [0.020, 0.020, 0.0]   # Back to origin
-                ], dtype=np.float32)
-                
-                # Project bed corners to image
-                bed_projected, _ = cv2.projectPoints(bed_corners_3d, rvec, tvec, camera_matrix, dist_coeffs)
-                bed_projected = bed_projected.reshape(-1, 2).astype(int)
-                
-                # Draw bed outline
-                for i in range(len(bed_projected) - 1):
-                    cv2.line(img, tuple(bed_projected[i]), tuple(bed_projected[i + 1]), (255, 255, 0), 3)  # Cyan bed outline
-                
-                # Draw printer coordinate axes at bed origin (20, 20)
-                bed_origin = [0.020, 0.020, 0.0]
-                printer_axes_3d = np.array([
-                    bed_origin,                           # Bed origin
-                    [bed_origin[0] + 0.05, bed_origin[1], bed_origin[2]],  # X-axis (50mm red)
-                    bed_origin,                           # Bed origin
-                    [bed_origin[0], bed_origin[1] + 0.05, bed_origin[2]],  # Y-axis (50mm green)
-                    bed_origin,                           # Bed origin
-                    [bed_origin[0], bed_origin[1], bed_origin[2] + 0.05]   # Z-axis (50mm blue)
-                ], dtype=np.float32)
-                
-                printer_axes_projected, _ = cv2.projectPoints(printer_axes_3d, rvec, tvec, camera_matrix, dist_coeffs)
-                printer_axes_projected = printer_axes_projected.reshape(-1, 2).astype(int)
-                
-                # Draw printer axes (thicker lines)
-                cv2.line(img, tuple(printer_axes_projected[0]), tuple(printer_axes_projected[1]), (0, 0, 255), 4)    # X-axis: Red
-                cv2.line(img, tuple(printer_axes_projected[2]), tuple(printer_axes_projected[3]), (0, 255, 0), 4)    # Y-axis: Green
-                cv2.line(img, tuple(printer_axes_projected[4]), tuple(printer_axes_projected[5]), (255, 0, 0), 4)    # Z-axis: Blue
+                draw_individual_marker_axes(img, refined_corners, ids, camera_matrix, dist_coeffs, 
+                                          marker_size, marker_positions, rvec, tvec)
+            
+                            # Draw global printer coordinate system axes at origin
+                if success and rvec is not None and tvec is not None:
+                    draw_global_printer_axes(img, camera_matrix, dist_coeffs, rvec, tvec, marker_size * 3)
+                    
+                    # Add camera pose information in ArUco coordinates
+                    add_camera_pose_info(img, rvec, tvec)
                 
                 # Add text with pose information
                 cv2.putText(img, f"Multi-Marker Pose", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 cv2.putText(img, f"Markers: {len(ids)}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                if len(img_object_points) > 0:
+                if img_object_points:
                     cv2.putText(img, f"Reproj Error: {reprojection_error:.1f}px", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 
                 # Add coordinate system labels
-                cv2.putText(img, f"Cyan: Bed Outline", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-                cv2.putText(img, f"Red: X-axis, Green: Y-axis, Blue: Z-axis", (10, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            
+                cv2.putText(img, f"Global Printer Coordinates:", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                cv2.putText(img, f"Red: X-axis (right), Green: Y-axis (back), Blue: Z-axis (up)", (10, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                        
             # Save debug image
             debug_path = f"calibration/out/imgs/debug_aruco_{img_path.name}"
             cv2.imwrite(debug_path, img)
-            print(f"  Saved debug image with pose visualization")
+            print(f"  Saved debug image with pose visualization to {debug_path}")
         else:
             print(f"  No markers detected")
-            all_rvecs.append(None)
-            all_tvecs.append(None)
-            all_camera_matrices.append(camera_matrix)
-            all_dist_coeffs.append(dist_coeffs)
-            all_object_points.append(np.array([]).reshape(0, 3))
-            all_image_points.append(np.array([]).reshape(0, 2))
     
-    # IMPROVEMENT 4: Bundle Adjustment
-    print(f"\nStep 3: Bundle Adjustment Optimization")
-    print("=" * 50)
-    
-    valid_indices = [i for i, rvec in enumerate(all_rvecs) if rvec is not None]
-    print(f"Performing bundle adjustment on {len(valid_indices)} valid poses...")
-    
-    if len(valid_indices) >= 2:
-        # Filter to only valid poses
-        valid_rvecs = [all_rvecs[i] for i in valid_indices]
-        valid_tvecs = [all_tvecs[i] for i in valid_indices]
-        valid_cameras = [all_camera_matrices[i] for i in valid_indices]
-        valid_dist_coeffs = [all_dist_coeffs[i] for i in valid_indices]
-        valid_object_points = [all_object_points[i] for i in valid_indices]
-        valid_image_points = [all_image_points[i] for i in valid_indices]
-        
-        # Perform bundle adjustment
-        optimized_rvecs, optimized_tvecs, optimization_result = bundle_adjustment(
-            valid_rvecs, valid_tvecs, valid_cameras, valid_dist_coeffs,
-            valid_object_points, valid_image_points
-        )
-        
-        # Update the poses with optimized values
-        opt_idx = 0
-        for i, valid_idx in enumerate(valid_indices):
-            if optimized_rvecs[opt_idx] is not None:
-                # Update image poses with optimized values
-                img_name = valid_images[valid_idx]
-                if img_name in image_poses:
-                    image_poses[img_name]['rvec'] = optimized_rvecs[opt_idx].flatten().tolist()
-                    image_poses[img_name]['tvec'] = optimized_tvecs[opt_idx].flatten().tolist()
-                    
-                    # Recalculate reprojection error with optimized pose
-                    if len(valid_object_points[opt_idx]) > 0:
-                        projected_points, _ = cv2.projectPoints(
-                            valid_object_points[opt_idx], optimized_rvecs[opt_idx], optimized_tvecs[opt_idx],
-                            valid_cameras[opt_idx], valid_dist_coeffs[opt_idx]
-                        )
-                        projected_points = projected_points.reshape(-1, 2)
-                        observed_points = valid_image_points[opt_idx]
-                        optimized_error = np.mean(np.linalg.norm(projected_points - observed_points, axis=1))
-                        
-                        pose_errors[img_name]['optimized_reprojection_error'] = optimized_error
-                        print(f"  {img_name}: {pose_errors[img_name]['reprojection_error']:.2f} -> {optimized_error:.2f} pixels")
-            
-            opt_idx += 1
-        
-        print(f"Bundle adjustment optimization completed!")
-        print(f"Final optimization cost: {optimization_result.cost:.6f}")
-    else:
-        print(f"Not enough valid poses for bundle adjustment (need ≥2, got {len(valid_indices)})")
+
     
     print(f"\nTotal poses estimated: {len(poses)}")
     print(f"Detected marker IDs: {sorted(set(marker_ids))}")
@@ -579,7 +408,7 @@ def apply_subpixel_refinement(gray, corners, pattern_size=None):
     
     return refined_corners
 
-def multi_marker_pose_estimation(corners, ids, camera_matrix, dist_coeffs, marker_size=0.04, marker_positions=None, coordinate_transform=True):
+def multi_marker_pose_estimation(corners, ids, camera_matrix, dist_coeffs, marker_size=0.04, marker_positions=None):
     """
     Estimate camera pose using all detected markers simultaneously
     
@@ -589,7 +418,7 @@ def multi_marker_pose_estimation(corners, ids, camera_matrix, dist_coeffs, marke
         camera_matrix: Camera intrinsic matrix
         dist_coeffs: Distortion coefficients
         marker_size: Size of markers in meters
-        marker_positions: Dictionary of known marker positions in world coordinates
+        marker_positions: Dictionary of known marker positions in printer coordinates
     
     Returns:
         rvec: Camera rotation vector
@@ -607,20 +436,16 @@ def multi_marker_pose_estimation(corners, ids, camera_matrix, dist_coeffs, marke
         marker_id = marker_id[0]  # Extract ID from array
         
         if marker_positions is not None and marker_id in marker_positions:
-            # Use known marker position in world coordinates
-            marker_center = np.array(marker_positions[marker_id])
+            # Use known marker position in printer coordinates - transform to ArUco coordinates
+            marker_center_printer = np.array(marker_positions[marker_id])
             
-            # Apply coordinate transformation if needed (printer -> OpenCV coordinates)
-            if coordinate_transform:
-                # Transform from printer coordinates (X=right, Y=back, Z=up) 
-                # to OpenCV coordinates (X=right, Y=down, Z=forward)
-                # This matches the transformation we used in visualization
-                transform_matrix = np.array([
-                    [1,  0,  0],  # X stays the same
-                    [0, -1,  0],  # Y inverted 
-                    [0,  0, -1]   # Z inverted
-                ])
-                marker_center = transform_matrix @ marker_center
+            # Transform from printer coordinates to ArUco coordinates
+            transform_matrix = np.array([
+                [1,  0,  0],  # X stays the same
+                [0, -1,  0],  # Y inverted: printer back -> ArUco down
+                [0,  0, -1]   # Z inverted: printer up -> ArUco forward
+            ])
+            marker_center = transform_matrix @ marker_center_printer
             
             # Define marker corners relative to center (40mm square)
             half_size = marker_size / 2
@@ -631,9 +456,8 @@ def multi_marker_pose_estimation(corners, ids, camera_matrix, dist_coeffs, marke
                 [-half_size,  half_size, 0]   # Top-left
             ])
         else:
-            # This should not happen if marker_positions is properly provided
-            print(f"WARNING: Marker ID {marker_id} not found in marker_positions!")
             # Fall back to standard marker coordinate system (marker at origin)
+            print(f"WARNING: Marker ID {marker_id} not found in marker_positions!")
             marker_corners_3d = marker_size * np.array([
                 [0, 0, 0],  # Bottom-left
                 [1, 0, 0],  # Bottom-right
@@ -656,121 +480,255 @@ def multi_marker_pose_estimation(corners, ids, camera_matrix, dist_coeffs, marke
     
     return rvec, tvec, success
 
-def bundle_adjustment_objective(params, camera_matrices, dist_coeffs, all_object_points, all_image_points, num_images):
+def draw_individual_marker_axes(img, corners, ids, camera_matrix, dist_coeffs, 
+                               marker_size, marker_positions, global_rvec, global_tvec):
     """
-    Objective function for bundle adjustment
+    Draw coordinate axes for each individual ArUco marker
     
     Args:
-        params: Flattened parameters [rvecs, tvecs, object_points_refinement]
-        camera_matrices: List of camera matrices (assuming fixed intrinsics)
-        dist_coeffs: List of distortion coefficients
-        all_object_points: List of 3D object points for each image
-        all_image_points: List of 2D image points for each image
-        num_images: Number of images
-    
-    Returns:
-        residuals: Reprojection errors flattened
+        img: Image to draw on
+        corners: List of marker corner arrays
+        ids: List of marker IDs
+        camera_matrix: Camera intrinsic matrix
+        dist_coeffs: Distortion coefficients
+        marker_size: Size of markers in meters
+        marker_positions: Dictionary of known marker positions in printer coordinates
+        global_rvec: Global rotation vector
+        global_tvec: Global translation vector
     """
-    # Parse parameters
-    param_idx = 0
+    if len(corners) == 0 or ids is None or len(ids) == 0:
+        return
     
-    # Extract camera poses (6 parameters per image: 3 for rotation, 3 for translation)
-    rvecs = []
-    tvecs = []
-    for i in range(num_images):
-        rvec = params[param_idx:param_idx+3].reshape(3, 1)
-        tvec = params[param_idx+3:param_idx+6].reshape(3, 1)
-        rvecs.append(rvec)
-        tvecs.append(tvec)
-        param_idx += 6
+    axes_length = marker_size * 0.8  # Slightly smaller than marker size
     
-    # For this implementation, we'll keep object points fixed
-    # In full bundle adjustment, you would also optimize 3D point positions
-    
-    residuals = []
-    
-    for i in range(num_images):
-        if len(all_object_points[i]) == 0:
-            continue
+    for i, marker_id in enumerate(ids):
+        marker_id = marker_id[0]
+        
+        if marker_id in marker_positions:
+            # Get marker center in printer coordinates - transform to ArUco coordinates
+            marker_center_printer = np.array(marker_positions[marker_id])
             
-        # Project 3D points to image
-        projected_points, _ = cv2.projectPoints(
-            all_object_points[i], rvecs[i], tvecs[i], 
-            camera_matrices[i], dist_coeffs[i]
-        )
-        projected_points = projected_points.reshape(-1, 2)
-        
-        # Compute residuals
-        image_points = all_image_points[i].reshape(-1, 2)
-        residual = (projected_points - image_points).flatten()
-        residuals.extend(residual)
-    
-    return np.array(residuals)
+            # Transform from printer coordinates to ArUco coordinates
+            transform_matrix = np.array([
+                [1,  0,  0],  # X stays the same
+                [0, -1,  0],  # Y inverted: printer back -> ArUco down
+                [0,  0, -1]   # Z inverted: printer up -> ArUco forward
+            ])
+            marker_center = transform_matrix @ marker_center_printer
+            
+            # Define axes points in marker's local coordinate system
+            marker_axes_3d = np.array([
+                marker_center,                                                # Origin
+                marker_center + [axes_length, 0, 0],                        # X-axis (red)
+                marker_center,                                                # Origin
+                marker_center + [0, axes_length, 0],                        # Y-axis (green)
+                marker_center,                                                # Origin
+                marker_center + [0, 0, axes_length]                         # Z-axis (blue)
+            ], dtype=np.float32)
+            
+            # Project to image coordinates
+            marker_axes_projected, _ = cv2.projectPoints(
+                marker_axes_3d, global_rvec, global_tvec, camera_matrix, dist_coeffs
+            )
+            marker_axes_projected = marker_axes_projected.reshape(-1, 2).astype(int)
+            
+            # Draw marker axes (thinner lines than global axes)
+            cv2.line(img, tuple(marker_axes_projected[0]), tuple(marker_axes_projected[1]), (0, 0, 200), 2)    # X-axis: Dark Red
+            cv2.line(img, tuple(marker_axes_projected[2]), tuple(marker_axes_projected[3]), (0, 200, 0), 2)    # Y-axis: Dark Green
+            cv2.line(img, tuple(marker_axes_projected[4]), tuple(marker_axes_projected[5]), (200, 0, 0), 2)    # Z-axis: Dark Blue
+            
+            # Add marker ID label near the origin
+            label_pos = tuple(marker_axes_projected[0] + [5, -5])
+            cv2.putText(img, f"ID{marker_id}", label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
-def bundle_adjustment(initial_rvecs, initial_tvecs, camera_matrices, dist_coeffs, 
-                     all_object_points, all_image_points):
+
+def draw_global_printer_axes(img, camera_matrix, dist_coeffs, rvec, tvec, axes_length):
     """
-    Perform bundle adjustment to refine camera poses
+    Draw global printer coordinate system axes at the printer origin (0, 0, 0)
+    If origin is outside image bounds, place axes at printer board center instead
     
     Args:
-        initial_rvecs: Initial rotation vectors for each image
-        initial_tvecs: Initial translation vectors for each image
-        camera_matrices: Camera matrices for each image
-        dist_coeffs: Distortion coefficients for each image
-        all_object_points: 3D object points for each image
-        all_image_points: 2D image points for each image
-    
-    Returns:
-        optimized_rvecs: Refined rotation vectors
-        optimized_tvecs: Refined translation vectors
-        optimization_result: scipy optimization result
+        img: Image to draw on
+        camera_matrix: Camera intrinsic matrix
+        dist_coeffs: Distortion coefficients
+        rvec: Camera rotation vector
+        tvec: Camera translation vector
+        axes_length: Length of the axes in meters
     """
-    num_images = len(initial_rvecs)
+    # Get image dimensions
+    img_height, img_width = img.shape[:2]
     
-    # Prepare initial parameters
-    initial_params = []
-    for i in range(num_images):
-        if initial_rvecs[i] is not None and initial_tvecs[i] is not None:
-            initial_params.extend(initial_rvecs[i].flatten())
-            initial_params.extend(initial_tvecs[i].flatten())
-        else:
-            # Use zero pose if no initial estimate
-            initial_params.extend([0, 0, 0, 0, 0, 0])
+    # Printer coordinate origin (0, 0, 0) in printer coordinates
+    printer_origin = np.array([0.0, 0.0, 0.0])
     
-    initial_params = np.array(initial_params)
+    # Transform from printer coordinates to ArUco coordinates
+    transform_matrix = np.array([
+        [1,  0,  0],  # X stays the same
+        [0, -1,  0],  # Y inverted: printer back -> ArUco down
+        [0,  0, -1]   # Z inverted: printer up -> ArUco forward
+    ])
     
-    print(f"Starting bundle adjustment with {num_images} images...")
-    print(f"Initial parameter vector size: {len(initial_params)}")
-    
-    # Run optimization
-    result = least_squares(
-        bundle_adjustment_objective,
-        initial_params,
-        args=(camera_matrices, dist_coeffs, all_object_points, all_image_points, num_images),
-        method='lm',  # Levenberg-Marquardt
-        verbose=1
+    # Transform origin to ArUco coordinates and project to image
+    aruco_origin = transform_matrix @ printer_origin
+    origin_projected, _ = cv2.projectPoints(
+        aruco_origin.reshape(1, 3), rvec, tvec, camera_matrix, dist_coeffs
     )
+    origin_2d = origin_projected.reshape(2).astype(int)
     
-    # Parse optimized parameters
-    param_idx = 0
-    optimized_rvecs = []
-    optimized_tvecs = []
+    # Check if origin is within image bounds (with some margin)
+    margin = 50
+    origin_in_bounds = (margin <= origin_2d[0] <= img_width - margin and 
+                       margin <= origin_2d[1] <= img_height - margin)
     
-    for i in range(num_images):
-        if initial_rvecs[i] is not None:
-            rvec = result.x[param_idx:param_idx+3].reshape(3, 1)
-            tvec = result.x[param_idx+3:param_idx+6].reshape(3, 1)
-        else:
-            rvec = None
-            tvec = None
-        
-        optimized_rvecs.append(rvec)
-        optimized_tvecs.append(tvec)
-        param_idx += 6
+    # If origin is out of bounds, use printer board center instead
+    if not origin_in_bounds:
+        # Calculate printer board center based on ArUco marker positions
+        # Markers range from (0.04, 0.04) to (0.22, 0.17) in printer coordinates
+        printer_board_center = np.array([0.13, 0.105, 0.0])  # Center of printer board
+        printer_origin = printer_board_center
+        label_text = "BOARD CENTER"
+        label_color = (255, 255, 0)  # Yellow for board center
+    else:
+        label_text = "ORIGIN"
+        label_color = (255, 255, 255)  # White for true origin
     
-    print(f"Bundle adjustment completed. Final cost: {result.cost:.6f}")
+    # Define printer coordinate axes directions in printer coordinates
+    printer_x_axis = np.array([axes_length, 0.0, 0.0])  # X: right
+    printer_y_axis = np.array([0.0, axes_length, 0.0])  # Y: back  
+    printer_z_axis = np.array([0.0, 0.0, axes_length])  # Z: up
     
-    return optimized_rvecs, optimized_tvecs, result
+    # Transform origin and axes to ArUco coordinates
+    aruco_origin = transform_matrix @ printer_origin
+    aruco_x_end = transform_matrix @ (printer_origin + printer_x_axis)
+    aruco_y_end = transform_matrix @ (printer_origin + printer_y_axis)
+    aruco_z_end = transform_matrix @ (printer_origin + printer_z_axis)
+    
+    # Combine points for projection
+    axes_points_3d = np.array([
+        aruco_origin,   # Origin
+        aruco_x_end,    # X-axis end
+        aruco_y_end,    # Y-axis end
+        aruco_z_end     # Z-axis end
+    ], dtype=np.float32)
+    
+    # Project to image coordinates
+    axes_projected, _ = cv2.projectPoints(
+        axes_points_3d, rvec, tvec, camera_matrix, dist_coeffs
+    )
+    axes_projected = axes_projected.reshape(-1, 2).astype(int)
+    
+    origin_2d = tuple(axes_projected[0])
+    x_end_2d = tuple(axes_projected[1])
+    y_end_2d = tuple(axes_projected[2])
+    z_end_2d = tuple(axes_projected[3])
+    
+    # Draw axes with printer coordinate system colors and labels
+    # X-axis: Red (printer right)
+    cv2.line(img, origin_2d, x_end_2d, (0, 0, 255), 6)
+    cv2.putText(img, "X", (x_end_2d[0] + 10, x_end_2d[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+    
+    # Y-axis: Green (printer back)
+    cv2.line(img, origin_2d, y_end_2d, (0, 255, 0), 6)
+    cv2.putText(img, "Y", (y_end_2d[0] + 10, y_end_2d[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    
+    # Z-axis: Blue (printer up)
+    cv2.line(img, origin_2d, z_end_2d, (255, 0, 0), 6)
+    cv2.putText(img, "Z", (z_end_2d[0] + 10, z_end_2d[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
+    
+    # Draw origin marker
+    cv2.circle(img, origin_2d, 8, (255, 255, 255), -1)
+    cv2.circle(img, origin_2d, 8, (0, 0, 0), 2)
+    cv2.putText(img, label_text, (origin_2d[0] + 15, origin_2d[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_color, 2)
+
+def add_camera_pose_info(img, rvec, tvec, scale=1.0):
+    """
+    Add camera position and orientation information in both ArUco and Printer coordinate systems
+    
+    Args:
+        img: Image to draw on
+        rvec: Camera rotation vector (in ArUco coordinates)
+        tvec: Camera translation vector (in ArUco coordinates)
+    """
+    # Convert rotation vector to rotation matrix
+    rmat, _ = cv2.Rodrigues(rvec)
+    
+    # Camera position in ArUco coordinates (inverse transformation)
+    # Camera pose gives object->camera transformation, we need camera->object
+    camera_pos_aruco = -rmat.T @ tvec.flatten()
+    
+    # Transform camera position from ArUco coordinates to Printer coordinates
+    # This is the inverse of the transformation we use for markers
+    inverse_transform_matrix = np.array([
+        [1,  0,  0],  # X stays the same
+        [0, -1,  0],  # Y inverted: ArUco down -> printer back
+        [0,  0, -1]   # Z inverted: ArUco forward -> printer up
+    ])
+    camera_pos_printer = inverse_transform_matrix @ camera_pos_aruco
+    
+    # Transform rotation matrix to printer coordinates
+    # ArUco rotation matrix -> Printer rotation matrix
+    transform_matrix = np.array([
+        [1,  0,  0],  # X stays the same
+        [0, -1,  0],  # Y inverted: ArUco down -> printer back
+        [0,  0, -1]   # Z inverted: ArUco forward -> printer up
+    ])
+    # R_printer = T * R_aruco * T^(-1)
+    rmat_printer = transform_matrix @ rmat @ transform_matrix.T
+    
+    # Extract Euler angles from rotation matrix (in Printer coordinates)
+    # Using ZYX convention: Yaw (Z), Pitch (Y), Roll (X)
+    sy = np.sqrt(rmat_printer[0,0] * rmat_printer[0,0] + rmat_printer[1,0] * rmat_printer[1,0])
+    singular = sy < 1e-6
+    
+    if not singular:
+        # Roll: rotation around X-axis (right) - camera tilt left/right
+        roll = np.arctan2(rmat_printer[2,1], rmat_printer[2,2])   
+        # Pitch: rotation around Y-axis (back) - camera look up/down  
+        pitch = np.arctan2(-rmat_printer[2,0], sy)        
+        # Yaw: rotation around Z-axis (up) - camera pan left/right
+        yaw = np.arctan2(rmat_printer[1,0], rmat_printer[0,0])    
+    else:
+        roll = np.arctan2(-rmat_printer[1,2], rmat_printer[1,1])
+        pitch = np.arctan2(-rmat_printer[2,0], sy)
+        yaw = 0
+    
+    # Convert to degrees
+    angles = np.array([roll, pitch, yaw]) * 180.0 / np.pi
+    
+    # Create text overlay (right side of image) - larger for dual coordinate display
+    text_x = img.shape[1] - 1200
+    text_y = 80
+    line_height = int(85 * scale)
+    col2_offset = 600  # Offset for second column
+    
+    # Background rectangle for better readability - larger for dual display
+    overlay = img.copy()
+    cv2.rectangle(overlay, (text_x - 40, text_y - 50), (img.shape[1] - 10, text_y + line_height * 9), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.7, img, 0.3, 0, img)
+    
+    # Header
+    cv2.putText(img, "CAMERA POSE", (text_x + 200, text_y), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (255, 255, 255), 5)
+    
+    # Column headers
+    cv2.putText(img, "ArUco Coords", (text_x, text_y + int(1.5*line_height)), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+    cv2.putText(img, "Printer Coords", (text_x + col2_offset, text_y + int(1.5*line_height)), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 0), 3)
+    
+    # Position data - ArUco coordinates
+    cv2.putText(img, f"X: {camera_pos_aruco[0]*100:.1f}cm", (text_x, text_y + 3*line_height), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    cv2.putText(img, f"Y: {camera_pos_aruco[1]*100:.1f}cm", (text_x, text_y + 4*line_height), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    cv2.putText(img, f"Z: {camera_pos_aruco[2]*100:.1f}cm", (text_x, text_y + 5*line_height), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    
+    # Position data - Printer coordinates
+    cv2.putText(img, f"X: {camera_pos_printer[0]*100:.1f}cm", (text_x + col2_offset, text_y + 3*line_height), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    cv2.putText(img, f"Y: {camera_pos_printer[1]*100:.1f}cm", (text_x + col2_offset, text_y + 4*line_height), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    cv2.putText(img, f"Z: {camera_pos_printer[2]*100:.1f}cm", (text_x + col2_offset, text_y + 5*line_height), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    
+    # Angles (in printer coordinates - displayed centered)
+    angle_x = text_x + 200
+    cv2.putText(img, "Orientation (Printer Coords)", (angle_x, text_y + int(6.5*line_height)), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 200, 100), 3)
+    cv2.putText(img, f"Roll: {angles[0]:.1f}° (tilt L/R)", (angle_x, text_y + 7*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
+    cv2.putText(img, f"Pitch: {angles[1]:.1f}° (look U/D)", (angle_x, text_y + 8*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
+    cv2.putText(img, f"Yaw: {angles[2]:.1f}° (pan L/R)", (angle_x, text_y + 9*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
 
 def main():
     parser = argparse.ArgumentParser(description="Two-step camera calibration")
