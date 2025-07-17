@@ -677,19 +677,20 @@ def add_camera_pose_info(img, rvec, tvec, scale=1.0):
     
     # Extract Euler angles from rotation matrix (in Printer coordinates)
     # Using ZYX convention: Yaw (Z), Pitch (Y), Roll (X)
+    # These angles are now in printer coordinate system for intuitive interpretation
     sy = np.sqrt(rmat_printer[0,0] * rmat_printer[0,0] + rmat_printer[1,0] * rmat_printer[1,0])
     singular = sy < 1e-6
     
     if not singular:
-        # Roll: rotation around X-axis (right) - camera tilt left/right
-        roll = np.arctan2(rmat_printer[2,1], rmat_printer[2,2])   
-        # Pitch: rotation around Y-axis (back) - camera look up/down  
-        pitch = np.arctan2(-rmat_printer[2,0], sy)        
-        # Yaw: rotation around Z-axis (up) - camera pan left/right
+        # Pitch: rotation around X-axis (camera tilts forward/backward)
+        pitch = np.arctan2(rmat_printer[2,1], rmat_printer[2,2])   
+        # Roll: rotation around Y-axis (camera tilts left/right)  
+        roll = np.arctan2(-rmat_printer[2,0], sy)        
+        # Yaw: rotation around Z-axis (camera rotates clockwise/counter-clockwise)
         yaw = np.arctan2(rmat_printer[1,0], rmat_printer[0,0])    
     else:
-        roll = np.arctan2(-rmat_printer[1,2], rmat_printer[1,1])
-        pitch = np.arctan2(-rmat_printer[2,0], sy)
+        pitch = np.arctan2(-rmat_printer[1,2], rmat_printer[1,1])
+        roll = np.arctan2(-rmat_printer[2,0], sy)
         yaw = 0
     
     # Convert to degrees
@@ -701,9 +702,9 @@ def add_camera_pose_info(img, rvec, tvec, scale=1.0):
     line_height = int(85 * scale)
     col2_offset = 600  # Offset for second column
     
-    # Background rectangle for better readability - larger for dual display
+    # Background rectangle for better readability - larger for dual display with explanations
     overlay = img.copy()
-    cv2.rectangle(overlay, (text_x - 40, text_y - 50), (img.shape[1] - 10, text_y + line_height * 9), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (text_x - 40, text_y - 50), (img.shape[1] - 10, text_y + line_height * 10 + 200), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.7, img, 0.3, 0, img)
     
     # Header
@@ -726,9 +727,17 @@ def add_camera_pose_info(img, rvec, tvec, scale=1.0):
     # Angles (in printer coordinates - displayed centered)
     angle_x = text_x + 200
     cv2.putText(img, "Orientation (Printer Coords)", (angle_x, text_y + int(6.5*line_height)), cv2.FONT_HERSHEY_SIMPLEX, 1.3, (255, 200, 100), 3)
-    cv2.putText(img, f"Roll: {angles[0]:.1f}° (tilt L/R)", (angle_x, text_y + 7*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
-    cv2.putText(img, f"Pitch: {angles[1]:.1f}° (look U/D)", (angle_x, text_y + 8*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
-    cv2.putText(img, f"Yaw: {angles[2]:.1f}° (pan L/R)", (angle_x, text_y + 9*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3)
+    cv2.putText(img, f"Roll: {angles[0]:.1f}deg (Y-axis rotation)", (angle_x, text_y + 7*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 255, 100), 3)
+    cv2.putText(img, f"Pitch: {angles[1]:.1f}deg (X-axis rotation)", (angle_x, text_y + 8*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 100, 255), 3)
+    cv2.putText(img, f"Yaw: {angles[2]:.1f}deg (Z-axis rotation)", (angle_x, text_y + 9*line_height + 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 100, 100), 3)
+    
+    # Add explanatory text for angle directions
+    explain_x = text_x + 50
+    explain_y = text_y + 10*line_height + 60
+    cv2.putText(img, "Angle Reference:", (explain_x, explain_y), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 255), 2)
+    cv2.putText(img, "Roll (Y-axis): camera tilts left/right", (explain_x, explain_y + 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 255, 100), 2)
+    cv2.putText(img, "Pitch (X-axis): camera tilts forward/backward", (explain_x, explain_y + 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 100, 255), 2)
+    cv2.putText(img, "Yaw (Z-axis): camera rotates clockwise/counter-clockwise", (explain_x, explain_y + 120), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 100, 100), 2)
 
 def main():
     parser = argparse.ArgumentParser(description="Two-step camera calibration")
